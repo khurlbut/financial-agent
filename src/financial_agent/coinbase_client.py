@@ -1,66 +1,34 @@
-import base64
-import hashlib
-import hmac
-import os
-import time
-from pathlib import Path
 from typing import Any, Dict, List
+import os
+from pathlib import Path
 
-import httpx
 from dotenv import load_dotenv
+from coinbase.rest import RESTClient
 
-# Load .env from project root explicitly
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ENV_PATH = PROJECT_ROOT / ".env"
 load_dotenv(dotenv_path=ENV_PATH)
 
-COINBASE_API_KEY = os.getenv("COINBASE_API_KEY")
-COINBASE_API_SECRET = os.getenv("COINBASE_API_SECRET")
-COINBASE_API_PASSPHRASE = os.getenv("COINBASE_API_PASSPHRASE")
+API_KEY_ID = os.getenv("COINBASE_API_KEY")
+API_SECRET = os.getenv("COINBASE_API_SECRET")
 
-BASE_URL = "https://api.coinbase.com/api/v3/brokerage"
+if API_SECRET:
+    # Turn the literal backslash-n sequences into real newlines for PEM parsing
+    API_SECRET = API_SECRET.replace("\\n", "\n")
 
 
 class CoinbaseClient:
     def __init__(self) -> None:
-        if not (COINBASE_API_KEY and COINBASE_API_SECRET):
-            raise RuntimeError("Coinbase API credentials are not set in environment")
+        if not (API_KEY_ID and API_SECRET):
+            raise RuntimeError("COINBASE_API_KEY or COINBASE_API_SECRET not set in environment")
 
-        s = COINBASE_API_SECRET.strip()
-        if len(s) < 16:
-            raise RuntimeError(f"COINBASE_API_SECRET looks too short: {repr(s)}")
+        self._client = RESTClient(api_key=API_KEY_ID, api_secret=API_SECRET)
 
-        try:
-            self._secret_bytes = base64.b64decode(s)
-        except Exception as exc:
-            raise RuntimeError(f"COINBASE_API_SECRET is not valid base64: {exc}, value={repr(s)}") from exc
+    def list_accounts(self) -> List[Dict[str, Any]]:
+        resp = self._client.get_accounts()  # GET /api/v3/brokerage/accounts
 
-    def _sign(self, timestamp: str, method: str, request_path: str, body: str = "") -> str:
-        message = f"{timestamp}{method.upper()}{request_path}{body}".encode("utf-8")
-        signature = hmac.new(self._secret_bytes, message, hashlib.sha256).digest()
-        return base64.b64encode(signature).decode("utf-8")
+        if isinstance(resp, dict):
+            return resp.get("accounts", [])
 
-    async def list_accounts(self) -> List[Dict[str, Any]]:
-        """
-        Calls GET /api/v3/brokerage/accounts and returns the 'accounts' list.
-        """
-        path = "/accounts"
-        url = f"{BASE_URL}{path}"
-        timestamp = str(int(time.time()))
-        method = "GET"
-        body = ""
-
-        headers = {
-            "CB-ACCESS-KEY": COINBASE_API_KEY,
-            "CB-ACCESS-SIGN": self._sign(timestamp, method, path, body),
-            "CB-ACCESS-TIMESTAMP": timestamp,
-            "Content-Type": "application/json",
-        }
-
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-
-        # Coinbase response shape: { "accounts": [...], "has_next": bool, ... }
-        return data.get("accounts", [])
+        accounts = getattr(resp, "accounts", [])
+        return [a.to_dict() if hasattr(a, "to_dict") else dict(a) for a in accounts]
