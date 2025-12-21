@@ -3,13 +3,10 @@ import hashlib
 import hmac
 import os
 import time
+from pathlib import Path
 from typing import Any, Dict, List
 
 import httpx
-from dotenv import load_dotenv
-
-import os
-from pathlib import Path
 from dotenv import load_dotenv
 
 # Load .env from project root explicitly
@@ -26,9 +23,17 @@ BASE_URL = "https://api.coinbase.com/api/v3/brokerage"
 
 class CoinbaseClient:
     def __init__(self) -> None:
-        if not (COINBASE_API_KEY and COINBASE_API_SECRET and COINBASE_API_PASSPHRASE):
+        if not (COINBASE_API_KEY and COINBASE_API_SECRET):
             raise RuntimeError("Coinbase API credentials are not set in environment")
-        self._secret_bytes = base64.b64decode(COINBASE_API_SECRET)
+
+        s = COINBASE_API_SECRET.strip()
+        if len(s) < 16:
+            raise RuntimeError(f"COINBASE_API_SECRET looks too short: {repr(s)}")
+
+        try:
+            self._secret_bytes = base64.b64decode(s)
+        except Exception as exc:
+            raise RuntimeError(f"COINBASE_API_SECRET is not valid base64: {exc}, value={repr(s)}") from exc
 
     def _sign(self, timestamp: str, method: str, request_path: str, body: str = "") -> str:
         message = f"{timestamp}{method.upper()}{request_path}{body}".encode("utf-8")
@@ -49,7 +54,6 @@ class CoinbaseClient:
             "CB-ACCESS-KEY": COINBASE_API_KEY,
             "CB-ACCESS-SIGN": self._sign(timestamp, method, path, body),
             "CB-ACCESS-TIMESTAMP": timestamp,
-            "CB-ACCESS-PASSPHRASE": COINBASE_API_PASSPHRASE,
             "Content-Type": "application/json",
         }
 
