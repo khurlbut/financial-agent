@@ -8,7 +8,14 @@ from typing import Any, Dict, List
 import httpx
 from dotenv import load_dotenv
 
-load_dotenv()
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load .env from project root explicitly
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ENV_PATH = PROJECT_ROOT / ".env"
+load_dotenv(dotenv_path=ENV_PATH)
 
 COINBASE_API_KEY = os.getenv("COINBASE_API_KEY")
 COINBASE_API_SECRET = os.getenv("COINBASE_API_SECRET")
