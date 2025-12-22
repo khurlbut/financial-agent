@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 import os
 from pathlib import Path
 
@@ -61,26 +61,145 @@ class CoinbaseClient:
         for asset in assets:
             product_id = f"{asset}-USD"
             try:
-                # Public market data: Get Public Market Trades (ticker).
-                # Docs: /market/products/{product_id}/ticker
-                ticker = self._client.get_public_market_trades(product_id=product_id)
-
-                # Depending on SDK shape, adapt to dict or model.
-                # For many SDKs, "price" or "last" is the relevant field.
-                price = None
-
-                if isinstance(ticker, dict):
-                    # Example shapes to try; adjust if your actual object differs.
-                    price = ticker.get("price") or ticker.get("last")
-                else:
-                    price = getattr(ticker, "price", None) or getattr(ticker, "last", None)
-
+                ticker = self._client.get_public_market_trades(product_id=product_id, limit=1)
+                price = self._extract_last_trade_price(ticker)
                 if price is not None:
                     prices[asset] = float(price)
-
             except Exception:
-                # For v0, swallow per-asset errors and leave price missing.
-                # The caller can treat missing entries as "no current_price".
                 continue
 
         return prices
+
+    @staticmethod
+    def _normalize_product_id(symbol_or_product_id: str, quote_currency: str = "USD") -> str:
+        s = (symbol_or_product_id or "").strip().upper()
+        q = (quote_currency or "USD").strip().upper()
+        if "-" in s:
+            return s
+        return f"{s}-{q}"
+
+    @staticmethod
+    def _to_dict(resp: Any) -> Dict[str, Any]:
+        if resp is None:
+            return {}
+        if isinstance(resp, dict):
+            return resp
+        if hasattr(resp, "to_dict"):
+            try:
+                return resp.to_dict()  # type: ignore[no-any-return]
+            except Exception:
+                pass
+        # Best-effort fallback.
+        try:
+            return dict(resp)
+        except Exception:
+            return {"repr": repr(resp)}
+
+    def preview_limit_order_gtc(
+        self,
+        *,
+        symbol_or_product_id: str,
+        side: str,
+        base_size: str,
+        limit_price: str,
+        quote_currency: str = "USD",
+    ) -> Dict[str, Any]:
+        product_id = self._normalize_product_id(symbol_or_product_id, quote_currency=quote_currency)
+        side_upper = side.strip().lower()
+
+        if side_upper == "buy":
+            resp = self._client.preview_limit_order_gtc_buy(
+                product_id=product_id,
+                base_size=base_size,
+                limit_price=limit_price,
+            )
+        elif side_upper == "sell":
+            resp = self._client.preview_limit_order_gtc_sell(
+                product_id=product_id,
+                base_size=base_size,
+                limit_price=limit_price,
+            )
+        else:
+            raise ValueError("side must be 'buy' or 'sell'")
+
+        return self._to_dict(resp)
+
+    def place_limit_order_gtc(
+        self,
+        *,
+        client_order_id: str,
+        symbol_or_product_id: str,
+        side: str,
+        base_size: str,
+        limit_price: str,
+        quote_currency: str = "USD",
+        post_only: bool = False,
+    ) -> Dict[str, Any]:
+        product_id = self._normalize_product_id(symbol_or_product_id, quote_currency=quote_currency)
+        side_upper = side.strip().lower()
+
+        if side_upper == "buy":
+            resp = self._client.limit_order_gtc_buy(
+                client_order_id=client_order_id,
+                product_id=product_id,
+                base_size=base_size,
+                limit_price=limit_price,
+                post_only=post_only,
+            )
+        elif side_upper == "sell":
+            resp = self._client.limit_order_gtc_sell(
+                client_order_id=client_order_id,
+                product_id=product_id,
+                base_size=base_size,
+                limit_price=limit_price,
+                post_only=post_only,
+            )
+        else:
+            raise ValueError("side must be 'buy' or 'sell'")
+
+        return self._to_dict(resp)
+
+    @staticmethod
+    def _extract_last_trade_price(market_trades: Any) -> Optional[str]:
+        """Best-effort extraction of a last trade price from get_public_market_trades."""
+        if market_trades is None:
+            return None
+
+        if isinstance(market_trades, dict):
+            trades = market_trades.get("trades")
+            if isinstance(trades, list) and trades:
+                first = trades[0]
+                if isinstance(first, dict):
+                    return first.get("price") or first.get("trade_price")
+
+            trade = market_trades.get("trade")
+            if isinstance(trade, dict):
+                return trade.get("price") or trade.get("trade_price")
+
+            return market_trades.get("price") or market_trades.get("last")
+
+        trades_attr = getattr(market_trades, "trades", None)
+        if isinstance(trades_attr, list) and trades_attr:
+            first = trades_attr[0]
+            if isinstance(first, dict):
+                return first.get("price") or first.get("trade_price")
+            return getattr(first, "price", None) or getattr(first, "trade_price", None)
+
+        return getattr(market_trades, "price", None) or getattr(market_trades, "last", None)
+
+    def get_spot_price(
+        self,
+        *,
+        symbol_or_product_id: str,
+        quote_currency: str = "USD",
+    ) -> Optional[float]:
+        """Return the latest observed trade price for a product.
+
+        Uses the public market data endpoint via the SDK.
+        """
+        product_id = self._normalize_product_id(symbol_or_product_id, quote_currency=quote_currency)
+        ticker = self._client.get_public_market_trades(product_id=product_id, limit=1)
+        price = self._extract_last_trade_price(ticker)
+        if price is None:
+            return None
+        return float(price)
