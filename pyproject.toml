@@ -16,6 +16,11 @@ dependencies = [
   "coinbase-advanced-py",
 ]
 
+[project.optional-dependencies]
+dev = [
+  "pytest",
+]
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 
