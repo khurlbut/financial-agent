@@ -1,5 +1,18 @@
 # financial-agent
 
+## Install
+
+From the repo root:
+
+- Runtime install: `pip install .`
+- Dev/test install: `pip install -e ".[dev]"`
+
+Run tests:
+
+- `python -m pytest`
+
+If you’re using the repo’s `.local_profile`, you can also run tests with: `t`
+
 ## Preferred AI Endpoint: `/agent/portfolio`
 
 If you’re building an AI agent (or any client that needs both total portfolio value and per-asset sizing), use:
