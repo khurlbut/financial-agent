@@ -10,8 +10,12 @@ from .coinbase_client import CoinbaseClient
 from . import settings
 from .models import (
     Account,
+    AccountValuation,
+    AssetAccountBreakdown,
+    AssetValuation,
     CashBalance,
     PriceQuote,
+    PortfolioValuation,
     PortfolioValue,
     PortfolioSnapshot,
     Position,
@@ -524,4 +528,170 @@ async def get_agent_value() -> PortfolioValue:
         currency="USD",
         total_value=str(total_usd),
         missing_prices=sorted(set(missing)),
+    )
+
+
+@app.get("/agent/portfolio", response_model=PortfolioValuation)
+async def get_agent_portfolio() -> PortfolioValuation:
+    """Valued portfolio view (snapshot + rollups).
+
+    Returns:
+    - total_value (cash + priced positions)
+    - by_asset (aggregated across accounts)
+    - by_account (account totals with holdings)
+
+    Assets in FINAGENT_IGNORED_ASSETS are omitted from positions/rollups.
+    """
+
+    try:
+        accounts: List[Dict[str, Any]] = await run_in_threadpool(coinbase_client.list_accounts)
+        prices: Dict[str, float] = await run_in_threadpool(
+            coinbase_client.get_spot_prices_for_accounts,
+            accounts,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Coinbase error: {exc}")
+
+    ignored = settings.get_ignored_assets()
+    as_of = datetime.now(timezone.utc)
+
+    # Normalize cash + positions.
+    cash: list[CashBalance] = []
+    positions: list[Position] = []
+
+    for acct in accounts:
+        maybe_cash = normalize_coinbase_cash_balance(acct)
+        if maybe_cash is not None:
+            cash.append(CashBalance(**maybe_cash))
+            continue
+
+        asset = acct.get("currency")
+        if not isinstance(asset, str) or not asset:
+            continue
+        if asset.strip().upper() in ignored:
+            continue
+        if asset in ("USD", "USDC"):
+            continue
+
+        available_balance = (acct.get("available_balance") or {}).get("value")
+        hold_balance = (acct.get("hold") or {}).get("value")
+        qty = _parse_decimal(available_balance) + _parse_decimal(hold_balance)
+        if qty <= 0:
+            continue
+
+        price = prices.get(asset)
+        positions.append(Position(**normalize_coinbase_position(acct, price)))
+
+    # Totals.
+    cash_total = sum((_parse_decimal(c.total) for c in cash), start=Decimal("0"))
+    positions_total = sum(
+        (_parse_decimal(p.market_value) for p in positions if p.market_value is not None),
+        start=Decimal("0"),
+    )
+    total = cash_total + positions_total
+
+    missing_prices = sorted({p.asset for p in positions if p.asset and p.market_value is None})
+
+    # Rollup by asset.
+    by_asset_map: dict[str, dict[str, Any]] = {}
+    for p in positions:
+        if not p.asset:
+            continue
+        asset = p.asset
+        entry = by_asset_map.setdefault(
+            asset,
+            {
+                "asset": asset,
+                "quote_currency": p.quote_currency or "USD",
+                "total_quantity": Decimal("0"),
+                "price": p.current_price,
+                "market_value": Decimal("0"),
+                "has_price": False,
+                "accounts": [],
+            },
+        )
+
+        qty = _parse_decimal(p.quantity)
+        entry["total_quantity"] += qty
+
+        mv = _parse_decimal(p.market_value) if p.market_value is not None else None
+        if mv is not None:
+            entry["market_value"] += mv
+            entry["has_price"] = True
+            if entry.get("price") is None:
+                entry["price"] = p.current_price
+
+        entry["accounts"].append(
+            AssetAccountBreakdown(
+                source=p.source,
+                account_id=p.account_id,
+                quantity=str(qty),
+                market_value=None if mv is None else str(mv),
+            )
+        )
+
+    by_asset: list[AssetValuation] = []
+    for asset, entry in sorted(by_asset_map.items(), key=lambda kv: kv[0]):
+        by_asset.append(
+            AssetValuation(
+                asset=asset,
+                quote_currency=entry["quote_currency"],
+                total_quantity=str(entry["total_quantity"]),
+                price=entry.get("price"),
+                market_value=str(entry["market_value"]) if entry.get("has_price") else None,
+                accounts=entry["accounts"],
+            )
+        )
+
+    # Rollup by account.
+    cash_by_acct: dict[str | None, list[CashBalance]] = {}
+    for c in cash:
+        cash_by_acct.setdefault(c.account_id, []).append(c)
+
+    positions_by_acct: dict[str | None, list[Position]] = {}
+    for p in positions:
+        positions_by_acct.setdefault(p.account_id, []).append(p)
+
+    by_account: list[AccountValuation] = []
+    for acct in accounts:
+        acct_id = acct.get("uuid")
+        if acct_id is not None and not isinstance(acct_id, str):
+            acct_id = None
+
+        name = acct.get("name") if isinstance(acct.get("name"), str) else None
+
+        acct_cash = cash_by_acct.get(acct_id, [])
+        acct_positions = positions_by_acct.get(acct_id, [])
+        if not acct_cash and not acct_positions:
+            continue
+
+        acct_total = Decimal("0")
+        for c in acct_cash:
+            acct_total += _parse_decimal(c.total)
+        for p in acct_positions:
+            if p.market_value is not None:
+                acct_total += _parse_decimal(p.market_value)
+
+        by_account.append(
+            AccountValuation(
+                source="coinbase",
+                account_id=acct_id,
+                name=name,
+                currency="USD",
+                total_value=str(acct_total),
+                cash=acct_cash,
+                positions=acct_positions,
+            )
+        )
+
+    return PortfolioValuation(
+        source="coinbase",
+        as_of=as_of,
+        currency="USD",
+        total_value=str(total),
+        cash_value=str(cash_total),
+        positions_value=str(positions_total),
+        by_asset=by_asset,
+        by_account=by_account,
+        missing_prices=missing_prices,
     )
