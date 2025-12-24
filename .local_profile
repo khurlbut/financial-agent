@@ -2,3 +2,16 @@
 
 unalias r 2>/dev/null
 r() { FINAGENT_RELOAD=true command python -m financial_agent.main "$@"; }
+
+unalias t 2>/dev/null
+t() {
+	local root
+	root="${${(%):-%x}:A:h}"
+	local py
+	if [[ -x "$root/.venv/bin/python" ]]; then
+		py="$root/.venv/bin/python"
+	else
+		py="python"
+	fi
+	(cd "$root" && command "$py" -m pytest "$@")
+}
