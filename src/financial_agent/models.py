@@ -66,6 +66,46 @@ class PortfolioValue(BaseModel):
     missing_prices: list[str] = Field(default_factory=list)
 
 
+class AssetAccountBreakdown(BaseModel):
+    source: Source
+    account_id: Optional[str] = None
+    quantity: str = Field(default="0")
+    market_value: Optional[str] = None
+
+
+class AssetValuation(BaseModel):
+    asset: str
+    quote_currency: str = Field(default="USD")
+    total_quantity: str = Field(default="0")
+    price: Optional[str] = None
+    market_value: Optional[str] = None
+    accounts: list[AssetAccountBreakdown] = Field(default_factory=list)
+
+
+class AccountValuation(BaseModel):
+    source: Source
+    account_id: Optional[str] = None
+    name: Optional[str] = None
+    currency: str = Field(default="USD")
+    total_value: str
+    cash: list[CashBalance] = Field(default_factory=list)
+    positions: list[Position] = Field(default_factory=list)
+
+
+class PortfolioValuation(BaseModel):
+    source: Source
+    as_of: datetime
+
+    currency: str = Field(default="USD")
+    total_value: str
+    cash_value: str
+    positions_value: str
+
+    by_asset: list[AssetValuation] = Field(default_factory=list)
+    by_account: list[AccountValuation] = Field(default_factory=list)
+    missing_prices: list[str] = Field(default_factory=list)
+
+
 OrderSide = Literal["buy", "sell"]
 OrderType = Literal["market", "limit"]
 
