@@ -1,29 +1,25 @@
 from typing import Any, Dict, List, Optional
-import os
-from pathlib import Path
-
-from dotenv import load_dotenv
 from coinbase.rest import RESTClient
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-ENV_PATH = PROJECT_ROOT / ".env"
-load_dotenv(dotenv_path=ENV_PATH)
-
-API_KEY_ID = os.getenv("COINBASE_API_KEY")
-API_SECRET = os.getenv("COINBASE_API_SECRET")
-
-if API_SECRET:
-    # Turn the literal backslash-n sequences into real newlines for PEM parsing
-    API_SECRET = API_SECRET.replace("\\n", "\n")
+from . import settings
 
 
 class CoinbaseClient:
     def __init__(self) -> None:
-        if not (API_KEY_ID and API_SECRET):
-            raise RuntimeError("COINBASE_API_KEY or COINBASE_API_SECRET not set in environment")
+        creds = settings.get_coinbase_credentials()
 
         # Official Advanced Trade REST client.
-        self._client = RESTClient(api_key=API_KEY_ID, api_secret=API_SECRET)
+        self._client = RESTClient(api_key=creds.api_key, api_secret=creds.api_secret)
+
+    @staticmethod
+    def _ignored_assets() -> set[str]:
+        """Assets to ignore for pricing/valuation.
+
+        Configure via FINAGENT_IGNORED_ASSETS (comma-separated). If unset/empty,
+        no assets are ignored.
+        """
+
+        return settings.get_ignored_assets()
 
     def list_accounts(self) -> List[Dict[str, Any]]:
         """
@@ -31,14 +27,41 @@ class CoinbaseClient:
 
         Backed by GET /api/v3/brokerage/accounts (List Accounts).
         """
-        resp = self._client.get_accounts()  # GET /api/v3/brokerage/accounts
+        accounts: list[Dict[str, Any]] = []
+        seen_ids: set[str] = set()
 
-        # Depending on SDK version, resp may be a dict-like or a model object.
-        if isinstance(resp, dict):
-            return resp.get("accounts", [])
+        cursor: str | None = None
+        while True:
+            resp = self._client.get_accounts(limit=250, cursor=cursor)  # GET /api/v3/brokerage/accounts
+            page = self._to_dict(resp)
+            page_accounts = page.get("accounts") or []
 
-        accounts = getattr(resp, "accounts", [])
-        return [a.to_dict() if hasattr(a, "to_dict") else dict(a) for a in accounts]
+            if isinstance(page_accounts, list):
+                for a in page_accounts:
+                    if isinstance(a, dict):
+                        d = a
+                    elif hasattr(a, "to_dict"):
+                        d = a.to_dict()  # type: ignore[assignment]
+                    else:
+                        try:
+                            d = dict(a)
+                        except Exception:
+                            d = {"repr": repr(a)}
+
+                    uuid = d.get("uuid")
+                    if isinstance(uuid, str) and uuid:
+                        if uuid in seen_ids:
+                            continue
+                        seen_ids.add(uuid)
+
+                    accounts.append(d)
+
+            has_next = bool(page.get("has_next"))
+            cursor = page.get("cursor") if isinstance(page.get("cursor"), str) else None
+            if not has_next or not cursor:
+                break
+
+        return accounts
 
     def get_spot_prices_for_accounts(self, accounts: List[Dict[str, Any]]) -> Dict[str, float]:
         """
@@ -49,16 +72,20 @@ class CoinbaseClient:
         GET /api/v3/brokerage/market/products/{product_id}/ticker
         where product_id is assumed to be "{asset}-USD" for v0.
         """
+        print("get_spot_prices_for_accounts 1")
+        ignored = self._ignored_assets()
         assets: set[str] = set()
         for acct in accounts:
             cur = acct.get("currency")
             # Skip pure cash wallets in v0.
-            if cur and cur not in ("USD", "USDC"):
-                assets.add(cur)
+            if isinstance(cur, str) and cur and cur not in ("USD", "USDC") and cur.upper() not in ignored:
+                assets.add(self._price_symbol_for_asset(cur))
 
         prices: Dict[str, float] = {}
 
+        print("get_spot_prices_for_accounts 2")
         for asset in assets:
+            print("get_spot_prices_for_accounts 3", asset)
             product_id = f"{asset}-USD"
             try:
                 ticker = self._client.get_public_market_trades(product_id=product_id, limit=1)
@@ -77,6 +104,32 @@ class CoinbaseClient:
         if "-" in s:
             return s
         return f"{s}-{q}"
+
+    @staticmethod
+    def _price_symbol_for_asset(asset: str) -> str:
+        """Return an asset symbol to use for pricing.
+
+        Some Coinbase account currencies represent wrapped/staked variants that
+        are valued against a different spot product in the UI.
+
+        Keep this intentionally small and conservative.
+        """
+
+        a = (asset or "").strip().upper()
+        overrides = {
+            # Staked ETH is valued like ETH in Coinbase UI.
+            "ETH2": "ETH",
+        }
+        return overrides.get(a, a)
+
+    @classmethod
+    def _apply_price_overrides(cls, symbol_or_product_id: str, quote_currency: str) -> str:
+        s = (symbol_or_product_id or "").strip().upper()
+        if "-" in s:
+            base, quote = s.split("-", 1)
+            base = cls._price_symbol_for_asset(base)
+            return f"{base}-{quote}"
+        return cls._price_symbol_for_asset(s)
 
     @staticmethod
     def _to_dict(resp: Any) -> Dict[str, Any]:
@@ -197,6 +250,7 @@ class CoinbaseClient:
 
         Uses the public market data endpoint via the SDK.
         """
+        symbol_or_product_id = self._apply_price_overrides(symbol_or_product_id, quote_currency)
         product_id = self._normalize_product_id(symbol_or_product_id, quote_currency=quote_currency)
         ticker = self._client.get_public_market_trades(product_id=product_id, limit=1)
         price = self._extract_last_trade_price(ticker)

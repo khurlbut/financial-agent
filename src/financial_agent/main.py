@@ -1,12 +1,12 @@
-import os
-
 import uvicorn
+
+from . import settings
 
 
 def main() -> None:
-	host = os.getenv("FINAGENT_HOST", "127.0.0.1")
-	port = int(os.getenv("FINAGENT_PORT", "8000"))
-	reload = os.getenv("FINAGENT_RELOAD", "false").strip().lower() in {"1", "true", "yes"}
+	host = settings.get_finagent_host()
+	port = settings.get_finagent_port()
+	reload = settings.get_finagent_reload()
 
 	uvicorn.run(
 		"financial_agent.agent_api:app",

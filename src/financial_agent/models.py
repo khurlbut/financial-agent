@@ -57,6 +57,15 @@ class PriceQuote(BaseModel):
     price: str
 
 
+class PortfolioValue(BaseModel):
+    source: Source
+    as_of: datetime
+
+    currency: str = Field(default="USD")
+    total_value: str
+    missing_prices: list[str] = Field(default_factory=list)
+
+
 OrderSide = Literal["buy", "sell"]
 OrderType = Literal["market", "limit"]
 

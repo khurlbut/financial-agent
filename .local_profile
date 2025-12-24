@@ -1,2 +1,4 @@
-alias python=python3
-source .venv/bin/activate
+[[ -f .venv/bin/activate ]] && source .venv/bin/activate
+
+unalias r 2>/dev/null
+r() { FINAGENT_RELOAD=true command python -m financial_agent.main "$@"; }

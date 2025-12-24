@@ -7,10 +7,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
 from .coinbase_client import CoinbaseClient
+from . import settings
 from .models import (
     Account,
     CashBalance,
     PriceQuote,
+    PortfolioValue,
     PortfolioSnapshot,
     Position,
     TradeExecutionResponse,
@@ -35,6 +37,15 @@ def _parse_positive_decimal(value: str, field_name: str, errors: list[str]) -> D
         return None
 
     return dec
+
+
+def _parse_decimal(value: str | None) -> Decimal:
+    if value is None:
+        return Decimal("0")
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError):
+        return Decimal("0")
 
 
 def _validate_trade_request(req: TradeRequest) -> tuple[list[str], list[str]]:
@@ -72,13 +83,22 @@ def normalize_coinbase_account(raw: Dict[str, Any]) -> Dict[str, Any]:
     Map Coinbase account JSON into the agent's normalized schema.
     """
     available = raw.get("available_balance", {}) or {}
+    hold = raw.get("hold", {}) or {}
+    total = raw.get("total_balance", {}) or {}
+
+    available_value = available.get("value")
+    hold_value = hold.get("value")
+    total_value = total.get("value")
+    if total_value is None:
+        total_value = str(_parse_decimal(available_value) + _parse_decimal(hold_value))
+
     return Account(
         source="coinbase",
         account_id=raw.get("uuid"),
         name=raw.get("name"),
         asset=raw.get("currency"),
-        available=available.get("value"),
-        total=available.get("value"),
+        available=available_value,
+        total=total_value,
     ).model_dump()
 
 
@@ -90,27 +110,23 @@ def normalize_coinbase_position(raw: Dict[str, Any], price: float | None) -> Dic
     cost_basis is not reconstructed, and current_price is optional.
     """
     available_balance = (raw.get("available_balance") or {}).get("value")
+    hold_balance = (raw.get("hold") or {}).get("value")
     asset = raw.get("currency")
     if asset is None:
         asset = ""
 
-    qty_float: float = 0.0
-    if available_balance is not None:
-        try:
-            qty_float = float(available_balance)
-        except (TypeError, ValueError):
-            qty_float = 0.0
+    qty = _parse_decimal(available_balance) + _parse_decimal(hold_balance)
 
-    market_value: float | None = None
+    market_value: Decimal | None = None
     if price is not None:
-        market_value = qty_float * price
+        market_value = qty * Decimal(str(price))
 
     return Position(
         source="coinbase",
         account_id=raw.get("uuid"),
         symbol=asset,  # v0 assumption: spot symbol == asset code
         asset=asset,
-        quantity=str(qty_float),
+        quantity=str(qty),
         cost_basis=None,  # v0: no cost basis reconstruction yet
         current_price=None if price is None else str(price),
         market_value=None if market_value is None else str(market_value),
@@ -124,8 +140,11 @@ def normalize_coinbase_cash_balance(raw: Dict[str, Any]) -> Dict[str, Any] | Non
         return None
 
     available = (raw.get("available_balance") or {}).get("value")
+    hold = (raw.get("hold") or {}).get("value")
+    total = (raw.get("total_balance") or {}).get("value")
     # Treat empty/zero cash balances as absent.
-    if available in (None, "0", "0.0"):
+    computed_total = _parse_decimal(total) if total is not None else (_parse_decimal(available) + _parse_decimal(hold))
+    if computed_total <= 0:
         return None
 
     return CashBalance(
@@ -133,7 +152,7 @@ def normalize_coinbase_cash_balance(raw: Dict[str, Any]) -> Dict[str, Any] | Non
         account_id=raw.get("uuid"),
         currency=currency,
         available=available,
-        total=available,
+        total=str(computed_total),
     ).model_dump()
 
 
@@ -169,18 +188,24 @@ async def get_agent_positions() -> Dict[str, Any]:
         raise HTTPException(status_code=502, detail=f"Coinbase error: {exc}")
 
     positions: List[Dict[str, Any]] = []
+    ignored = settings.get_ignored_assets()
 
     for acct in accounts:
         # Skip empty or cash-only accounts in v0.
         available_balance = (acct.get("available_balance") or {}).get("value")
+        hold_balance = (acct.get("hold") or {}).get("value")
         asset = acct.get("currency")
         if not isinstance(asset, str) or not asset:
+            continue
+
+        if asset.strip().upper() in ignored:
             continue
 
         if asset in ("USD", "USDC"):
             continue
 
-        if available_balance in (None, "0", "0.0"):
+        qty = _parse_decimal(available_balance) + _parse_decimal(hold_balance)
+        if qty <= 0:
             continue
 
         price = prices.get(asset)
@@ -231,8 +256,7 @@ async def execute_trade(req: TradeRequest, confirm: bool = False) -> TradeExecut
         errors.append("client_order_id is required for execute (idempotency)")
 
     # Execution policy (local safety rails).
-    allowed_symbols_raw = os.getenv("FINAGENT_ALLOWED_SYMBOLS", "").strip()
-    allowed_symbols = {s.strip().upper() for s in allowed_symbols_raw.split(",") if s.strip()}
+    allowed_symbols = settings.get_allowed_symbols()
     if not allowed_symbols:
         errors.append(
             "FINAGENT_ALLOWED_SYMBOLS must be set (comma-separated), e.g. 'BTC,ETH'"
@@ -242,12 +266,10 @@ async def execute_trade(req: TradeRequest, confirm: bool = False) -> TradeExecut
     if allowed_symbols and symbol_upper not in allowed_symbols:
         errors.append(f"symbol '{symbol_upper}' not in FINAGENT_ALLOWED_SYMBOLS")
 
-    max_notional_raw = os.getenv("FINAGENT_MAX_NOTIONAL_USD", "").strip()
-    try:
-        max_notional = Decimal(max_notional_raw) if max_notional_raw else Decimal("0")
-    except (InvalidOperation, TypeError):
-        max_notional = Decimal("0")
+    max_notional = settings.get_max_notional_usd()
+    if max_notional is None:
         errors.append("FINAGENT_MAX_NOTIONAL_USD must be a valid decimal string")
+        max_notional = Decimal("0")
 
     if max_notional <= 0:
         errors.append("FINAGENT_MAX_NOTIONAL_USD must be set to > 0")
@@ -382,6 +404,7 @@ async def get_agent_snapshot() -> PortfolioSnapshot:
 
     positions: List[Dict[str, Any]] = []
     cash: List[Dict[str, Any]] = []
+    ignored = settings.get_ignored_assets()
 
     for acct in accounts:
         maybe_cash = normalize_coinbase_cash_balance(acct)
@@ -390,12 +413,17 @@ async def get_agent_snapshot() -> PortfolioSnapshot:
             continue
 
         available_balance = (acct.get("available_balance") or {}).get("value")
+        hold_balance = (acct.get("hold") or {}).get("value")
         asset = acct.get("currency")
         if not isinstance(asset, str) or not asset:
             continue
 
+        if asset.strip().upper() in ignored:
+            continue
+
         # Skip empty accounts.
-        if available_balance in (None, "0", "0.0"):
+        qty = _parse_decimal(available_balance) + _parse_decimal(hold_balance)
+        if qty <= 0:
             continue
 
         price = prices.get(asset)
@@ -437,4 +465,63 @@ async def get_agent_price(symbol: str, quote_currency: str = "USD") -> PriceQuot
         as_of=datetime.now(timezone.utc),
         product_id=product_id,
         price=str(price),
+    )
+
+
+@app.get("/agent/value", response_model=PortfolioValue)
+async def get_agent_value() -> PortfolioValue:
+    """Compute total Coinbase holdings value in USD (cash + spot assets)."""
+    try:
+        accounts: List[Dict[str, Any]] = await run_in_threadpool(coinbase_client.list_accounts)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Coinbase error: {exc}")
+
+    total_usd = Decimal("0")
+    missing: list[str] = []
+    ignored = settings.get_ignored_assets()
+
+    # Cash wallets (treat USD + USDC as USD equivalent for v1).
+    for acct in accounts:
+        cur = acct.get("currency")
+        if cur in ("USD", "USDC"):
+            available = (acct.get("available_balance") or {}).get("value")
+            hold = (acct.get("hold") or {}).get("value")
+            total_usd += _parse_decimal(available) + _parse_decimal(hold)
+
+    # Spot assets.
+    for acct in accounts:
+        cur = acct.get("currency")
+        if not isinstance(cur, str) or not cur or cur in ("USD", "USDC"):
+            continue
+
+        if cur.strip().upper() in ignored:
+            continue
+
+        available = (acct.get("available_balance") or {}).get("value")
+        hold = (acct.get("hold") or {}).get("value")
+        qty = _parse_decimal(available) + _parse_decimal(hold)
+        if qty <= 0:
+            continue
+
+        try:
+            price = await run_in_threadpool(
+                coinbase_client.get_spot_price,
+                symbol_or_product_id=cur,
+                quote_currency="USD",
+            )
+        except Exception:
+            price = None
+
+        if price is None:
+            missing.append(cur)
+            continue
+
+        total_usd += qty * Decimal(str(price))
+
+    return PortfolioValue(
+        source="coinbase",
+        as_of=datetime.now(timezone.utc),
+        currency="USD",
+        total_value=str(total_usd),
+        missing_prices=sorted(set(missing)),
     )
