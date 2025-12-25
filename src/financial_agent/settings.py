@@ -96,3 +96,12 @@ def get_cold_storage_path() -> Path:
     if raw:
         return Path(raw).expanduser()
     return PROJECT_ROOT / "cold_storage.json"
+
+
+def get_price_provider_id() -> str:
+    """Pricing provider identifier.
+
+    Defaults to 'coinbase'. Intended to be swappable (e.g., 'binance') later.
+    """
+
+    return (_env("FINAGENT_PRICE_PROVIDER") or "coinbase").strip().lower()
