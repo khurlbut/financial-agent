@@ -1,0 +1,10 @@
+{
+  "devices": [
+    {
+      "name": "Trezor 2022",
+      "holdings": {
+        "BTC": 11.08
+      }
+    }
+  ]
+}

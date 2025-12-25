@@ -34,3 +34,18 @@ Key fields in the response:
 - `by_asset`: aggregated view per asset (quantity, price, market value) including per-account breakdowns for consolidation/rebalancing workflows
 - `by_account`: per-account totals with holdings (cash + positions)
 - `missing_prices`: assets with balances that could not be priced (assets in `FINAGENT_IGNORED_ASSETS` are omitted)
+
+## Independent Queries (Net Worth / Containers / Holdings)
+
+If your client prefers to query these concepts independently (instead of consuming the full `/agent/portfolio` payload), use:
+
+- Total net worth (aggregate across all sources):
+	- `GET /agent/networth`
+- List all brokerages/exchanges/devices (“containers”) with their total value:
+	- `GET /agent/containers`
+- Get total value for a single container:
+	- `GET /agent/container/value?source=coinbase&account_id=coinbase`
+	- `GET /agent/container/value?source=cold_storage&account_id=<device name>`
+- Get holdings for a single container (includes cash + positions):
+	- `GET /agent/container/holdings?source=coinbase&account_id=coinbase`
+	- `GET /agent/container/holdings?source=cold_storage&account_id=<device name>`

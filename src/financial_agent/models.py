@@ -5,7 +5,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
-Source = Literal["coinbase"]
+Source = Literal["coinbase", "cold_storage", "aggregate"]
 
 
 class Account(BaseModel):
@@ -103,6 +103,57 @@ class PortfolioValuation(BaseModel):
 
     by_asset: list[AssetValuation] = Field(default_factory=list)
     by_account: list[AccountValuation] = Field(default_factory=list)
+    missing_prices: list[str] = Field(default_factory=list)
+
+
+class NetWorthSummary(BaseModel):
+    """Total net worth across all sources."""
+
+    source: Source = Field(default="aggregate")
+    as_of: datetime
+    currency: str = Field(default="USD")
+    total_value: str
+
+
+class ContainerSummary(BaseModel):
+    """Value summary for a single brokerage/exchange/device."""
+
+    source: Source
+    account_id: Optional[str] = None
+    name: Optional[str] = None
+    currency: str = Field(default="USD")
+    total_value: str
+
+
+class ContainerSummaries(BaseModel):
+    """List of all containers and their total values."""
+
+    source: Source = Field(default="aggregate")
+    as_of: datetime
+    currency: str = Field(default="USD")
+    containers: list[ContainerSummary] = Field(default_factory=list)
+
+
+class HoldingLine(BaseModel):
+    """A single holding line item for a container."""
+
+    asset: str
+    quantity: str
+    quote_currency: str = Field(default="USD")
+    price: Optional[str] = None
+    market_value: Optional[str] = None
+
+
+class ContainerHoldings(BaseModel):
+    """Holdings and totals for a single brokerage/exchange/device."""
+
+    source: Source
+    as_of: datetime
+    account_id: Optional[str] = None
+    name: Optional[str] = None
+    currency: str = Field(default="USD")
+    total_value: str
+    holdings: list[HoldingLine] = Field(default_factory=list)
     missing_prices: list[str] = Field(default_factory=list)
 
 
