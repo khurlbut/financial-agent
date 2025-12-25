@@ -87,3 +87,12 @@ def get_finagent_port() -> int:
 def get_finagent_reload() -> bool:
     raw = _env("FINAGENT_RELOAD") or "false"
     return raw.strip().lower() in {"1", "true", "yes"}
+
+
+def get_cold_storage_path() -> Path:
+    """Path to the user-maintained cold storage holdings file."""
+
+    raw = _env("FINAGENT_COLD_STORAGE_PATH")
+    if raw:
+        return Path(raw).expanduser()
+    return PROJECT_ROOT / "cold_storage.json"

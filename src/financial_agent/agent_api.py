@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
 from .coinbase_client import CoinbaseClient
+from .cold_storage import load_cold_storage_devices
 from . import settings
 from .models import (
     Account,
@@ -14,6 +15,11 @@ from .models import (
     AssetAccountBreakdown,
     AssetValuation,
     CashBalance,
+    ContainerHoldings,
+    ContainerSummaries,
+    ContainerSummary,
+    HoldingLine,
+    NetWorthSummary,
     PriceQuote,
     PortfolioValuation,
     PortfolioValue,
@@ -27,6 +33,272 @@ from .models import (
 app = FastAPI(title="Financial Agent API")
 
 coinbase_client = CoinbaseClient()
+
+
+async def _compute_portfolio_valuation() -> PortfolioValuation:
+    """Compute the aggregate portfolio valuation (Coinbase + cold storage).
+
+    Centralizing this keeps /agent/portfolio, /agent/networth, and container endpoints
+    consistent.
+    """
+
+    try:
+        accounts: List[Dict[str, Any]] = await run_in_threadpool(coinbase_client.list_accounts)
+        prices: Dict[str, float] = await run_in_threadpool(
+            coinbase_client.get_spot_prices_for_accounts,
+            accounts,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Coinbase error: {exc}")
+
+    # Cold storage devices (user-maintained local file).
+    try:
+        cold_devices = load_cold_storage_devices(settings.get_cold_storage_path())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Cold storage file error: {exc}")
+
+    ignored = settings.get_ignored_assets()
+    as_of = datetime.now(timezone.utc)
+
+    cash: list[CashBalance] = []
+    positions: list[Position] = []
+
+    # Coinbase (normalized into a single container).
+    COINBASE_CONTAINER_ID = "coinbase"
+
+    coinbase_cash_totals: dict[str, Decimal] = {}
+    coinbase_position_qty: dict[str, Decimal] = {}
+
+    for acct in accounts:
+        currency = acct.get("currency")
+        if not isinstance(currency, str) or not currency:
+            continue
+
+        asset_upper = currency.strip().upper()
+        if asset_upper in ignored:
+            continue
+
+        available_balance = (acct.get("available_balance") or {}).get("value")
+        hold_balance = (acct.get("hold") or {}).get("value")
+        qty = _parse_decimal(available_balance) + _parse_decimal(hold_balance)
+        if qty <= 0:
+            continue
+
+        if asset_upper in ("USD", "USDC"):
+            coinbase_cash_totals[asset_upper] = coinbase_cash_totals.get(asset_upper, Decimal("0")) + qty
+            continue
+
+        coinbase_position_qty[asset_upper] = coinbase_position_qty.get(asset_upper, Decimal("0")) + qty
+
+    # Coinbase cash balances as holdings.
+    for cur, total_amt in sorted(coinbase_cash_totals.items(), key=lambda kv: kv[0]):
+        cash.append(
+            CashBalance(
+                source="coinbase",
+                account_id=COINBASE_CONTAINER_ID,
+                currency=cur,
+                available=None,
+                total=str(total_amt),
+            )
+        )
+
+    # Coinbase positions as holdings.
+    for asset, total_qty in sorted(coinbase_position_qty.items(), key=lambda kv: kv[0]):
+        price = prices.get(asset)
+        mv: Decimal | None = None
+        if price is not None:
+            mv = total_qty * Decimal(str(price))
+
+        positions.append(
+            Position(
+                source="coinbase",
+                account_id=COINBASE_CONTAINER_ID,
+                symbol=asset,
+                asset=asset,
+                quantity=str(total_qty),
+                cost_basis=None,
+                current_price=None if price is None else str(price),
+                market_value=None if mv is None else str(mv),
+                quote_currency="USD",
+            )
+        )
+
+    # Cold storage positions (valued using Coinbase spot prices).
+    cold_prices: dict[str, float] = {}
+    cold_assets = sorted({asset for d in cold_devices for asset in d.holdings.keys()})
+    for asset in cold_assets:
+        if asset.strip().upper() in ignored:
+            continue
+        if asset in ("USD", "USDC"):
+            cold_prices[asset] = 1.0
+            continue
+        try:
+            p = await run_in_threadpool(
+                coinbase_client.get_spot_price,
+                symbol_or_product_id=asset,
+                quote_currency="USD",
+            )
+        except Exception:
+            p = None
+        if p is not None:
+            cold_prices[asset] = float(p)
+
+    for device in cold_devices:
+        for asset, qty_s in device.holdings.items():
+            if asset.strip().upper() in ignored:
+                continue
+            qty = _parse_decimal(qty_s)
+            if qty <= 0:
+                continue
+
+            price = cold_prices.get(asset)
+            mv: Decimal | None = None
+            if price is not None:
+                mv = qty * Decimal(str(price))
+
+            positions.append(
+                Position(
+                    source="cold_storage",
+                    account_id=device.name,
+                    symbol=asset,
+                    asset=asset,
+                    quantity=str(qty),
+                    cost_basis=None,
+                    current_price=None if price is None else str(price),
+                    market_value=None if mv is None else str(mv),
+                    quote_currency="USD",
+                )
+            )
+
+    cash_total = sum((_parse_decimal(c.total) for c in cash), start=Decimal("0"))
+    positions_total = sum(
+        (_parse_decimal(p.market_value) for p in positions if p.market_value is not None),
+        start=Decimal("0"),
+    )
+    total = cash_total + positions_total
+
+    missing_prices = sorted({p.asset for p in positions if p.asset and p.market_value is None})
+
+    # Rollup by asset.
+    by_asset_map: dict[str, dict[str, Any]] = {}
+    for p in positions:
+        if not p.asset:
+            continue
+        asset = p.asset
+        entry = by_asset_map.setdefault(
+            asset,
+            {
+                "asset": asset,
+                "quote_currency": p.quote_currency or "USD",
+                "total_quantity": Decimal("0"),
+                "price": p.current_price,
+                "market_value": Decimal("0"),
+                "has_price": False,
+                "accounts": [],
+            },
+        )
+
+        qty = _parse_decimal(p.quantity)
+        entry["total_quantity"] += qty
+
+        mv = _parse_decimal(p.market_value) if p.market_value is not None else None
+        if mv is not None:
+            entry["market_value"] += mv
+            entry["has_price"] = True
+            if entry.get("price") is None:
+                entry["price"] = p.current_price
+
+        entry["accounts"].append(
+            AssetAccountBreakdown(
+                source=p.source,
+                account_id=p.account_id,
+                quantity=str(qty),
+                market_value=None if mv is None else str(mv),
+            )
+        )
+
+    by_asset: list[AssetValuation] = []
+    for asset, entry in sorted(by_asset_map.items(), key=lambda kv: kv[0]):
+        by_asset.append(
+            AssetValuation(
+                asset=asset,
+                quote_currency=entry["quote_currency"],
+                total_quantity=str(entry["total_quantity"]),
+                price=entry.get("price"),
+                market_value=str(entry["market_value"]) if entry.get("has_price") else None,
+                accounts=entry["accounts"],
+            )
+        )
+
+    # Rollup by account/device.
+    cash_by_acct: dict[tuple[str, str | None], list[CashBalance]] = {}
+    for c in cash:
+        cash_by_acct.setdefault((c.source, c.account_id), []).append(c)
+
+    positions_by_acct: dict[tuple[str, str | None], list[Position]] = {}
+    for p in positions:
+        positions_by_acct.setdefault((p.source, p.account_id), []).append(p)
+
+    by_account: list[AccountValuation] = []
+
+    # Coinbase container.
+    acct_cash = cash_by_acct.get(("coinbase", COINBASE_CONTAINER_ID), [])
+    acct_positions = positions_by_acct.get(("coinbase", COINBASE_CONTAINER_ID), [])
+    acct_total = Decimal("0")
+    for c in acct_cash:
+        acct_total += _parse_decimal(c.total)
+    for p in acct_positions:
+        if p.market_value is not None:
+            acct_total += _parse_decimal(p.market_value)
+
+    if acct_cash or acct_positions:
+        by_account.append(
+            AccountValuation(
+                source="coinbase",
+                account_id=COINBASE_CONTAINER_ID,
+                name="Coinbase",
+                currency="USD",
+                total_value=str(acct_total),
+                cash=acct_cash,
+                positions=acct_positions,
+            )
+        )
+
+    # Cold storage devices.
+    for device in cold_devices:
+        acct_id = device.name
+        acct_positions = positions_by_acct.get(("cold_storage", acct_id), [])
+        if not acct_positions:
+            continue
+
+        acct_total = Decimal("0")
+        for p in acct_positions:
+            if p.market_value is not None:
+                acct_total += _parse_decimal(p.market_value)
+
+        by_account.append(
+            AccountValuation(
+                source="cold_storage",
+                account_id=acct_id,
+                name=device.name,
+                currency="USD",
+                total_value=str(acct_total),
+                cash=[],
+                positions=acct_positions,
+            )
+        )
+
+    return PortfolioValuation(
+        source="aggregate",
+        as_of=as_of,
+        currency="USD",
+        total_value=str(total),
+        cash_value=str(cash_total),
+        positions_value=str(positions_total),
+        by_asset=by_asset,
+        by_account=by_account,
+        missing_prices=missing_prices,
+    )
 
 
 def _parse_positive_decimal(value: str, field_name: str, errors: list[str]) -> Decimal | None:
@@ -543,155 +815,117 @@ async def get_agent_portfolio() -> PortfolioValuation:
     Assets in FINAGENT_IGNORED_ASSETS are omitted from positions/rollups.
     """
 
-    try:
-        accounts: List[Dict[str, Any]] = await run_in_threadpool(coinbase_client.list_accounts)
-        prices: Dict[str, float] = await run_in_threadpool(
-            coinbase_client.get_spot_prices_for_accounts,
-            accounts,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Coinbase error: {exc}")
+    return await _compute_portfolio_valuation()
 
-    ignored = settings.get_ignored_assets()
-    as_of = datetime.now(timezone.utc)
 
-    # Normalize cash + positions.
-    cash: list[CashBalance] = []
-    positions: list[Position] = []
-
-    for acct in accounts:
-        maybe_cash = normalize_coinbase_cash_balance(acct)
-        if maybe_cash is not None:
-            cash.append(CashBalance(**maybe_cash))
-            continue
-
-        asset = acct.get("currency")
-        if not isinstance(asset, str) or not asset:
-            continue
-        if asset.strip().upper() in ignored:
-            continue
-        if asset in ("USD", "USDC"):
-            continue
-
-        available_balance = (acct.get("available_balance") or {}).get("value")
-        hold_balance = (acct.get("hold") or {}).get("value")
-        qty = _parse_decimal(available_balance) + _parse_decimal(hold_balance)
-        if qty <= 0:
-            continue
-
-        price = prices.get(asset)
-        positions.append(Position(**normalize_coinbase_position(acct, price)))
-
-    # Totals.
-    cash_total = sum((_parse_decimal(c.total) for c in cash), start=Decimal("0"))
-    positions_total = sum(
-        (_parse_decimal(p.market_value) for p in positions if p.market_value is not None),
-        start=Decimal("0"),
+@app.get("/agent/networth", response_model=NetWorthSummary)
+async def get_agent_networth() -> NetWorthSummary:
+    portfolio = await _compute_portfolio_valuation()
+    return NetWorthSummary(
+        source="aggregate",
+        as_of=portfolio.as_of,
+        currency=portfolio.currency,
+        total_value=portfolio.total_value,
     )
-    total = cash_total + positions_total
 
-    missing_prices = sorted({p.asset for p in positions if p.asset and p.market_value is None})
 
-    # Rollup by asset.
-    by_asset_map: dict[str, dict[str, Any]] = {}
-    for p in positions:
+@app.get("/agent/containers", response_model=ContainerSummaries)
+async def get_agent_containers() -> ContainerSummaries:
+    portfolio = await _compute_portfolio_valuation()
+    containers = [
+        ContainerSummary(
+            source=a.source,
+            account_id=a.account_id,
+            name=a.name,
+            currency=a.currency,
+            total_value=a.total_value,
+        )
+        for a in portfolio.by_account
+    ]
+    return ContainerSummaries(
+        source="aggregate",
+        as_of=portfolio.as_of,
+        currency=portfolio.currency,
+        containers=containers,
+    )
+
+
+@app.get("/agent/container/value", response_model=ContainerSummary)
+async def get_agent_container_value(source: str, account_id: str | None = None) -> ContainerSummary:
+    src = (source or "").strip()
+    if not src:
+        raise HTTPException(status_code=400, detail="source is required")
+
+    portfolio = await _compute_portfolio_valuation()
+    for a in portfolio.by_account:
+        if a.source == src and a.account_id == account_id:
+            return ContainerSummary(
+                source=a.source,
+                account_id=a.account_id,
+                name=a.name,
+                currency=a.currency,
+                total_value=a.total_value,
+            )
+    raise HTTPException(status_code=404, detail="container not found")
+
+
+@app.get("/agent/container/holdings", response_model=ContainerHoldings)
+async def get_agent_container_holdings(source: str, account_id: str | None = None) -> ContainerHoldings:
+    src = (source or "").strip()
+    if not src:
+        raise HTTPException(status_code=400, detail="source is required")
+
+    portfolio = await _compute_portfolio_valuation()
+
+    container: AccountValuation | None = None
+    for a in portfolio.by_account:
+        if a.source == src and a.account_id == account_id:
+            container = a
+            break
+    if container is None:
+        raise HTTPException(status_code=404, detail="container not found")
+
+    holdings: list[HoldingLine] = []
+    missing_prices: set[str] = set()
+
+    # Cash balances as holdings (USD value == amount).
+    for c in container.cash:
+        qty = c.total or "0"
+        if _parse_decimal(qty) <= 0:
+            continue
+        holdings.append(
+            HoldingLine(
+                asset=c.currency,
+                quantity=str(_parse_decimal(qty)),
+                quote_currency=container.currency,
+                price="1",
+                market_value=str(_parse_decimal(qty)),
+            )
+        )
+
+    # Positions.
+    for p in container.positions:
         if not p.asset:
             continue
-        asset = p.asset
-        entry = by_asset_map.setdefault(
-            asset,
-            {
-                "asset": asset,
-                "quote_currency": p.quote_currency or "USD",
-                "total_quantity": Decimal("0"),
-                "price": p.current_price,
-                "market_value": Decimal("0"),
-                "has_price": False,
-                "accounts": [],
-            },
-        )
-
-        qty = _parse_decimal(p.quantity)
-        entry["total_quantity"] += qty
-
-        mv = _parse_decimal(p.market_value) if p.market_value is not None else None
-        if mv is not None:
-            entry["market_value"] += mv
-            entry["has_price"] = True
-            if entry.get("price") is None:
-                entry["price"] = p.current_price
-
-        entry["accounts"].append(
-            AssetAccountBreakdown(
-                source=p.source,
-                account_id=p.account_id,
-                quantity=str(qty),
-                market_value=None if mv is None else str(mv),
+        if p.market_value is None:
+            missing_prices.add(p.asset)
+        holdings.append(
+            HoldingLine(
+                asset=p.asset,
+                quantity=p.quantity,
+                quote_currency=p.quote_currency or container.currency,
+                price=p.current_price,
+                market_value=p.market_value,
             )
         )
 
-    by_asset: list[AssetValuation] = []
-    for asset, entry in sorted(by_asset_map.items(), key=lambda kv: kv[0]):
-        by_asset.append(
-            AssetValuation(
-                asset=asset,
-                quote_currency=entry["quote_currency"],
-                total_quantity=str(entry["total_quantity"]),
-                price=entry.get("price"),
-                market_value=str(entry["market_value"]) if entry.get("has_price") else None,
-                accounts=entry["accounts"],
-            )
-        )
-
-    # Rollup by account.
-    cash_by_acct: dict[str | None, list[CashBalance]] = {}
-    for c in cash:
-        cash_by_acct.setdefault(c.account_id, []).append(c)
-
-    positions_by_acct: dict[str | None, list[Position]] = {}
-    for p in positions:
-        positions_by_acct.setdefault(p.account_id, []).append(p)
-
-    by_account: list[AccountValuation] = []
-    for acct in accounts:
-        acct_id = acct.get("uuid")
-        if acct_id is not None and not isinstance(acct_id, str):
-            acct_id = None
-
-        name = acct.get("name") if isinstance(acct.get("name"), str) else None
-
-        acct_cash = cash_by_acct.get(acct_id, [])
-        acct_positions = positions_by_acct.get(acct_id, [])
-        if not acct_cash and not acct_positions:
-            continue
-
-        acct_total = Decimal("0")
-        for c in acct_cash:
-            acct_total += _parse_decimal(c.total)
-        for p in acct_positions:
-            if p.market_value is not None:
-                acct_total += _parse_decimal(p.market_value)
-
-        by_account.append(
-            AccountValuation(
-                source="coinbase",
-                account_id=acct_id,
-                name=name,
-                currency="USD",
-                total_value=str(acct_total),
-                cash=acct_cash,
-                positions=acct_positions,
-            )
-        )
-
-    return PortfolioValuation(
-        source="coinbase",
-        as_of=as_of,
-        currency="USD",
-        total_value=str(total),
-        cash_value=str(cash_total),
-        positions_value=str(positions_total),
-        by_asset=by_asset,
-        by_account=by_account,
-        missing_prices=missing_prices,
+    return ContainerHoldings(
+        source=container.source,
+        as_of=portfolio.as_of,
+        account_id=container.account_id,
+        name=container.name,
+        currency=container.currency,
+        total_value=container.total_value,
+        holdings=holdings,
+        missing_prices=sorted(missing_prices),
     )
