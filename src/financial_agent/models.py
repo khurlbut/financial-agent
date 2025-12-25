@@ -10,6 +10,7 @@ Source = Literal["coinbase", "cold_storage", "aggregate"]
 
 class Account(BaseModel):
     source: Source
+    container_id: Optional[str] = None
     account_id: Optional[str] = None
     name: Optional[str] = None
     asset: Optional[str] = None
@@ -19,6 +20,7 @@ class Account(BaseModel):
 
 class Position(BaseModel):
     source: Source
+    container_id: Optional[str] = None
     account_id: Optional[str] = None
     symbol: Optional[str] = None
     asset: Optional[str] = None
@@ -33,6 +35,7 @@ class Position(BaseModel):
 
 class CashBalance(BaseModel):
     source: Source
+    container_id: Optional[str] = None
     account_id: Optional[str] = None
     currency: str
 
@@ -68,6 +71,7 @@ class PortfolioValue(BaseModel):
 
 class AssetAccountBreakdown(BaseModel):
     source: Source
+    container_id: Optional[str] = None
     account_id: Optional[str] = None
     quantity: str = Field(default="0")
     market_value: Optional[str] = None
@@ -84,6 +88,7 @@ class AssetValuation(BaseModel):
 
 class AccountValuation(BaseModel):
     source: Source
+    container_id: Optional[str] = None
     account_id: Optional[str] = None
     name: Optional[str] = None
     currency: str = Field(default="USD")
@@ -103,7 +108,16 @@ class PortfolioValuation(BaseModel):
 
     by_asset: list[AssetValuation] = Field(default_factory=list)
     by_account: list[AccountValuation] = Field(default_factory=list)
+    by_container: list["ContainerSummary"] = Field(default_factory=list)
     missing_prices: list[str] = Field(default_factory=list)
+
+
+class PricingInfo(BaseModel):
+    """Expose which pricing provider/protocol is active."""
+
+    as_of: datetime
+    pricing_provider_id: str
+    quote_currency: str = Field(default="USD")
 
 
 class NetWorthSummary(BaseModel):
@@ -119,6 +133,7 @@ class ContainerSummary(BaseModel):
     """Value summary for a single brokerage/exchange/device."""
 
     source: Source
+    container_id: Optional[str] = None
     account_id: Optional[str] = None
     name: Optional[str] = None
     currency: str = Field(default="USD")
@@ -142,6 +157,7 @@ class HoldingLine(BaseModel):
     quote_currency: str = Field(default="USD")
     price: Optional[str] = None
     market_value: Optional[str] = None
+    account_id: Optional[str] = None
 
 
 class ContainerHoldings(BaseModel):
@@ -149,12 +165,26 @@ class ContainerHoldings(BaseModel):
 
     source: Source
     as_of: datetime
+    container_id: Optional[str] = None
     account_id: Optional[str] = None
     name: Optional[str] = None
     currency: str = Field(default="USD")
     total_value: str
     holdings: list[HoldingLine] = Field(default_factory=list)
     missing_prices: list[str] = Field(default_factory=list)
+
+
+class ContainerAccount(BaseModel):
+    source: Source
+    container_id: str
+    account_id: str
+    name: Optional[str] = None
+
+
+class ContainerAccounts(BaseModel):
+    source: Source
+    container_id: str
+    accounts: list[ContainerAccount] = Field(default_factory=list)
 
 
 OrderSide = Literal["buy", "sell"]

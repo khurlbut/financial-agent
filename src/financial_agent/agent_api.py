@@ -9,17 +9,24 @@ from fastapi.concurrency import run_in_threadpool
 from .coinbase_client import CoinbaseClient
 from .cold_storage import load_cold_storage_devices
 from . import settings
+from .portfolio_service import PortfolioService
+from .pricing_providers import CoinbasePricingProvider
+from .providers.coinbase_provider import CoinbaseHoldingsProvider
+from .providers.cold_storage_provider import ColdStorageHoldingsProvider
 from .models import (
     Account,
     AccountValuation,
     AssetAccountBreakdown,
     AssetValuation,
     CashBalance,
+    ContainerAccount,
+    ContainerAccounts,
     ContainerHoldings,
     ContainerSummaries,
     ContainerSummary,
     HoldingLine,
     NetWorthSummary,
+    PricingInfo,
     PriceQuote,
     PortfolioValuation,
     PortfolioValue,
@@ -33,6 +40,23 @@ from .models import (
 app = FastAPI(title="Financial Agent API")
 
 coinbase_client = CoinbaseClient()
+
+
+def _get_portfolio_service() -> PortfolioService:
+    # Providers (holdings sources)
+    providers = [
+        CoinbaseHoldingsProvider(client=coinbase_client, container_id="coinbase"),
+        ColdStorageHoldingsProvider(),
+    ]
+
+    # Pricing provider
+    provider_id = settings.get_price_provider_id()
+    if provider_id != "coinbase":
+        # Keep v1 conservative: only Coinbase pricing implemented.
+        raise HTTPException(status_code=500, detail=f"Unsupported pricing provider: {provider_id}")
+
+    pricer = CoinbasePricingProvider(client=coinbase_client)
+    return PortfolioService(providers=providers, pricer=pricer)
 
 
 async def _compute_portfolio_valuation() -> PortfolioValuation:
@@ -370,6 +394,7 @@ def normalize_coinbase_account(raw: Dict[str, Any]) -> Dict[str, Any]:
 
     return Account(
         source="coinbase",
+        container_id="coinbase",
         account_id=raw.get("uuid"),
         name=raw.get("name"),
         asset=raw.get("currency"),
@@ -399,6 +424,7 @@ def normalize_coinbase_position(raw: Dict[str, Any], price: float | None) -> Dic
 
     return Position(
         source="coinbase",
+        container_id="coinbase",
         account_id=raw.get("uuid"),
         symbol=asset,  # v0 assumption: spot symbol == asset code
         asset=asset,
@@ -425,6 +451,7 @@ def normalize_coinbase_cash_balance(raw: Dict[str, Any]) -> Dict[str, Any] | Non
 
     return CashBalance(
         source="coinbase",
+        container_id="coinbase",
         account_id=raw.get("uuid"),
         currency=currency,
         available=available,
@@ -815,117 +842,144 @@ async def get_agent_portfolio() -> PortfolioValuation:
     Assets in FINAGENT_IGNORED_ASSETS are omitted from positions/rollups.
     """
 
-    return await _compute_portfolio_valuation()
+    svc = _get_portfolio_service()
+    computed = await svc.compute_portfolio()
+    return computed.portfolio
+
+
+@app.get("/agent/pricing", response_model=PricingInfo)
+async def get_agent_pricing() -> PricingInfo:
+    svc = _get_portfolio_service()
+    return PricingInfo(
+        as_of=datetime.now(timezone.utc),
+        pricing_provider_id=svc.pricing_provider_id,
+        quote_currency="USD",
+    )
 
 
 @app.get("/agent/networth", response_model=NetWorthSummary)
 async def get_agent_networth() -> NetWorthSummary:
-    portfolio = await _compute_portfolio_valuation()
-    return NetWorthSummary(
-        source="aggregate",
-        as_of=portfolio.as_of,
-        currency=portfolio.currency,
-        total_value=portfolio.total_value,
-    )
+    svc = _get_portfolio_service()
+    return await svc.get_networth()
 
 
 @app.get("/agent/containers", response_model=ContainerSummaries)
 async def get_agent_containers() -> ContainerSummaries:
-    portfolio = await _compute_portfolio_valuation()
-    containers = [
-        ContainerSummary(
-            source=a.source,
-            account_id=a.account_id,
-            name=a.name,
-            currency=a.currency,
-            total_value=a.total_value,
-        )
-        for a in portfolio.by_account
-    ]
+    svc = _get_portfolio_service()
+    computed = await svc.compute_portfolio()
+    containers = computed.container_totals
     return ContainerSummaries(
         source="aggregate",
-        as_of=portfolio.as_of,
-        currency=portfolio.currency,
+        as_of=computed.as_of,
+        currency=computed.currency,
         containers=containers,
     )
 
 
-@app.get("/agent/container/value", response_model=ContainerSummary)
-async def get_agent_container_value(source: str, account_id: str | None = None) -> ContainerSummary:
+@app.get("/agent/container/accounts", response_model=ContainerAccounts)
+async def get_agent_container_accounts(
+    source: str,
+    container_id: str | None = None,
+    account_id: str | None = None,
+) -> ContainerAccounts:
     src = (source or "").strip()
     if not src:
         raise HTTPException(status_code=400, detail="source is required")
 
-    portfolio = await _compute_portfolio_valuation()
-    for a in portfolio.by_account:
-        if a.source == src and a.account_id == account_id:
-            return ContainerSummary(
-                source=a.source,
+    # Back-compat: older callers used account_id to refer to a container.
+    if container_id is None:
+        container_id = account_id
+        account_id = None
+
+    if not container_id:
+        raise HTTPException(status_code=400, detail="container_id is required")
+
+    svc = _get_portfolio_service()
+    try:
+        accounts = await svc.list_accounts(source=src, container_id=container_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="container not found")
+
+    return ContainerAccounts(
+        source=src,  # type: ignore[arg-type]
+        container_id=container_id,
+        accounts=[
+            ContainerAccount(
+                source=src,  # type: ignore[arg-type]
+                container_id=container_id,
                 account_id=a.account_id,
                 name=a.name,
-                currency=a.currency,
-                total_value=a.total_value,
             )
-    raise HTTPException(status_code=404, detail="container not found")
+            for a in accounts
+        ],
+    )
+
+
+@app.get("/agent/container/value", response_model=ContainerSummary)
+async def get_agent_container_value(
+    source: str,
+    container_id: str | None = None,
+    account_id: str | None = None,
+) -> ContainerSummary:
+    src = (source or "").strip()
+    if not src:
+        raise HTTPException(status_code=400, detail="source is required")
+
+    # Back-compat: older callers used account_id to refer to a container.
+    if container_id is None:
+        container_id = account_id
+        account_id = None
+
+    if not container_id:
+        raise HTTPException(status_code=400, detail="container_id is required")
+
+    svc = _get_portfolio_service()
+
+    # If an account_id is provided, return the specific account valuation.
+    if account_id is not None:
+        computed = await svc.compute_portfolio()
+        for a in computed.portfolio.by_account:
+            if a.source == src and a.container_id == container_id and a.account_id == account_id:
+                return ContainerSummary(
+                    source=a.source,
+                    container_id=container_id,
+                    account_id=a.account_id,
+                    name=a.name,
+                    currency=a.currency,
+                    total_value=a.total_value,
+                )
+        raise HTTPException(status_code=404, detail="account not found")
+
+    try:
+        return await svc.get_container_value(source=src, container_id=container_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="container not found")
 
 
 @app.get("/agent/container/holdings", response_model=ContainerHoldings)
-async def get_agent_container_holdings(source: str, account_id: str | None = None) -> ContainerHoldings:
+async def get_agent_container_holdings(
+    source: str,
+    container_id: str | None = None,
+    account_id: str | None = None,
+) -> ContainerHoldings:
     src = (source or "").strip()
     if not src:
         raise HTTPException(status_code=400, detail="source is required")
 
-    portfolio = await _compute_portfolio_valuation()
+    # Back-compat: older callers used account_id to refer to a container.
+    if container_id is None:
+        container_id = account_id
+        account_id = None
 
-    container: AccountValuation | None = None
-    for a in portfolio.by_account:
-        if a.source == src and a.account_id == account_id:
-            container = a
-            break
-    if container is None:
+    if not container_id:
+        raise HTTPException(status_code=400, detail="container_id is required")
+
+    svc = _get_portfolio_service()
+    try:
+        return await svc.get_container_holdings(
+            source=src,
+            container_id=container_id,
+            account_id=account_id,
+        )
+    except KeyError:
         raise HTTPException(status_code=404, detail="container not found")
-
-    holdings: list[HoldingLine] = []
-    missing_prices: set[str] = set()
-
-    # Cash balances as holdings (USD value == amount).
-    for c in container.cash:
-        qty = c.total or "0"
-        if _parse_decimal(qty) <= 0:
-            continue
-        holdings.append(
-            HoldingLine(
-                asset=c.currency,
-                quantity=str(_parse_decimal(qty)),
-                quote_currency=container.currency,
-                price="1",
-                market_value=str(_parse_decimal(qty)),
-            )
-        )
-
-    # Positions.
-    for p in container.positions:
-        if not p.asset:
-            continue
-        if p.market_value is None:
-            missing_prices.add(p.asset)
-        holdings.append(
-            HoldingLine(
-                asset=p.asset,
-                quantity=p.quantity,
-                quote_currency=p.quote_currency or container.currency,
-                price=p.current_price,
-                market_value=p.market_value,
-            )
-        )
-
-    return ContainerHoldings(
-        source=container.source,
-        as_of=portfolio.as_of,
-        account_id=container.account_id,
-        name=container.name,
-        currency=container.currency,
-        total_value=container.total_value,
-        holdings=holdings,
-        missing_prices=sorted(missing_prices),
-    )

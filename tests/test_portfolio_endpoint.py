@@ -47,8 +47,14 @@ def test_agent_portfolio_rolls_up_by_asset_and_by_account(app_client: TestClient
         def list_accounts(self):
             return accounts
 
-        def get_spot_prices_for_accounts(self, accounts):
-            return {"BTC": 100_000.0, "ETH": 4_000.0}
+        def get_spot_price(self, *, symbol_or_product_id: str, quote_currency: str = "USD"):
+            assert quote_currency == "USD"
+            sym = symbol_or_product_id.split("-", 1)[0].upper()
+            if sym == "BTC":
+                return 100_000.0
+            if sym == "ETH":
+                return 4_000.0
+            return None
 
     monkeypatch.setattr(agent_api, "coinbase_client", DummyCoinbase())
 
@@ -68,14 +74,26 @@ def test_agent_portfolio_rolls_up_by_asset_and_by_account(app_client: TestClient
     assert Decimal(by_asset["BTC"]["total_quantity"]) == Decimal("0.12")
     assert Decimal(by_asset["BTC"]["market_value"]) == Decimal("12000")
 
-    # BTC should show a single Coinbase container breakdown
-    btc_accounts = [(a.get("source"), a.get("account_id"), Decimal(a["quantity"])) for a in by_asset["BTC"]["accounts"]]
-    assert btc_accounts == [("coinbase", "coinbase", Decimal("0.12"))]
+    # BTC should show per-account breakdown (wallets) within the Coinbase container.
+    btc_accounts = {
+        (a.get("source"), a.get("container_id"), a.get("account_id")): Decimal(a["quantity"])
+        for a in by_asset["BTC"]["accounts"]
+    }
+    assert btc_accounts[("coinbase", "coinbase", "btc-a")] == Decimal("0.10")
+    assert btc_accounts[("coinbase", "coinbase", "btc-b")] == Decimal("0.02")
 
-    # By-account rollup should include a single Coinbase container.
-    by_account = {(row["source"], row.get("account_id")): row for row in data["by_account"]}
-    assert ("coinbase", "coinbase") in by_account
-    assert Decimal(by_account[("coinbase", "coinbase")]["total_value"]) == expected_total
+    # By-account rollup should include the Coinbase sub-accounts (wallets).
+    by_account = {(row["source"], row.get("container_id"), row.get("account_id")): row for row in data["by_account"]}
+    assert ("coinbase", "coinbase", "usd-1") in by_account
+    assert ("coinbase", "coinbase", "btc-a") in by_account
+    assert ("coinbase", "coinbase", "btc-b") in by_account
+    assert ("coinbase", "coinbase", "eth-1") in by_account
+    assert sum((Decimal(v["total_value"]) for v in by_account.values()), start=Decimal("0")) == expected_total
+
+    # By-container rollup should include a single Coinbase container total.
+    by_container = {(row["source"], row.get("container_id")): row for row in data["by_container"]}
+    assert ("coinbase", "coinbase") in by_container
+    assert Decimal(by_container[("coinbase", "coinbase")]["total_value"]) == expected_total
 
     assert data["missing_prices"] == []
 
@@ -98,9 +116,6 @@ def test_agent_portfolio_includes_cold_storage_holdings(app_client: TestClient, 
         def list_accounts(self):
             return accounts
 
-        def get_spot_prices_for_accounts(self, accounts):
-            return {}
-
         def get_spot_price(self, *, symbol_or_product_id: str, quote_currency: str = "USD"):
             assert quote_currency == "USD"
             if symbol_or_product_id == "BTC":
@@ -118,12 +133,15 @@ def test_agent_portfolio_includes_cold_storage_holdings(app_client: TestClient, 
 
     by_asset = {row["asset"]: row for row in data["by_asset"]}
     assert "BTC" in by_asset
-    btc_accounts = {(a.get("source"), a.get("account_id")): Decimal(a["quantity"]) for a in by_asset["BTC"]["accounts"]}
-    assert btc_accounts[("cold_storage", "Trezor 2022")] == Decimal("1.5")
+    btc_accounts = {
+        (a.get("source"), a.get("container_id"), a.get("account_id")): Decimal(a["quantity"])
+        for a in by_asset["BTC"]["accounts"]
+    }
+    assert btc_accounts[("cold_storage", "Trezor 2022", None)] == Decimal("1.5")
 
-    by_account = {(row["source"], row["account_id"]): row for row in data["by_account"]}
-    assert ("cold_storage", "Trezor 2022") in by_account
-    assert Decimal(by_account[("cold_storage", "Trezor 2022")]["total_value"]) == Decimal("150000")
+    by_container = {(row["source"], row.get("container_id")): row for row in data["by_container"]}
+    assert ("cold_storage", "Trezor 2022") in by_container
+    assert Decimal(by_container[("cold_storage", "Trezor 2022")]["total_value"]) == Decimal("150000")
 
 
 def test_agent_networth_and_container_endpoints(app_client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path):
@@ -145,11 +163,12 @@ def test_agent_networth_and_container_endpoints(app_client: TestClient, monkeypa
         def list_accounts(self):
             return accounts
 
-        def get_spot_prices_for_accounts(self, accounts):
-            return {"ETH": 4_000.0}
-
         def get_spot_price(self, *, symbol_or_product_id: str, quote_currency: str = "USD"):
-            if symbol_or_product_id == "BTC":
+            assert quote_currency == "USD"
+            sym = symbol_or_product_id.split("-", 1)[0].upper()
+            if sym == "ETH":
+                return 4_000.0
+            if sym == "BTC":
                 return 100_000.0
             return None
 
@@ -163,20 +182,78 @@ def test_agent_networth_and_container_endpoints(app_client: TestClient, monkeypa
 
     containers = app_client.get("/agent/containers").json()
     # Should include at least: coinbase (normalized), Trezor 2022
-    keys = {(c["source"], c.get("account_id")) for c in containers["containers"]}
+    keys = {(c["source"], c.get("container_id")) for c in containers["containers"]}
     assert ("coinbase", "coinbase") in keys
     assert ("cold_storage", "Trezor 2022") in keys
 
     trezor_value = app_client.get(
         "/agent/container/value",
-        params={"source": "cold_storage", "account_id": "Trezor 2022"},
+        params={"source": "cold_storage", "container_id": "Trezor 2022"},
     ).json()
     assert Decimal(trezor_value["total_value"]) == Decimal("150000")
 
     trezor_holdings = app_client.get(
         "/agent/container/holdings",
-        params={"source": "cold_storage", "account_id": "Trezor 2022"},
+        params={"source": "cold_storage", "container_id": "Trezor 2022"},
     ).json()
     holdings = {h["asset"]: h for h in trezor_holdings["holdings"]}
     assert Decimal(holdings["BTC"]["quantity"]) == Decimal("1.5")
     assert Decimal(holdings["BTC"]["market_value"]) == Decimal("150000")
+
+
+def test_agent_pricing_and_container_accounts(app_client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    from financial_agent import agent_api
+
+    accounts = [
+        _acct("USD", available="100", hold="0", uuid="usd-1", name="USD Wallet"),
+        _acct("BTC", available="0.10", hold="0.00", uuid="btc-a", name="BTC Wallet A"),
+    ]
+
+    class DummyCoinbase:
+        def list_accounts(self):
+            return accounts
+
+        def get_spot_price(self, *, symbol_or_product_id: str, quote_currency: str = "USD"):
+            sym = symbol_or_product_id.split("-", 1)[0].upper()
+            if sym == "BTC":
+                return 100_000.0
+            return None
+
+    monkeypatch.setattr(agent_api, "coinbase_client", DummyCoinbase())
+
+    pricing = app_client.get("/agent/pricing").json()
+    assert pricing["pricing_provider_id"] == "coinbase"
+
+    acct_list = app_client.get(
+        "/agent/container/accounts",
+        params={"source": "coinbase", "container_id": "coinbase"},
+    ).json()
+    assert acct_list["source"] == "coinbase"
+    assert acct_list["container_id"] == "coinbase"
+    ids = {a["account_id"] for a in acct_list["accounts"]}
+    assert ids == {"usd-1", "btc-a"}
+
+
+def test_agent_snapshot_includes_container_ids(app_client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    from financial_agent import agent_api
+
+    accounts = [
+        _acct("USD", available="100", hold="0", uuid="usd-1", name="USD Wallet"),
+        _acct("BTC", available="0.10", hold="0.00", uuid="btc-a", name="BTC Wallet A"),
+    ]
+
+    class DummyCoinbase:
+        def list_accounts(self):
+            return accounts
+
+        def get_spot_prices_for_accounts(self, accounts):
+            return {"BTC": 100_000.0}
+
+    monkeypatch.setattr(agent_api, "coinbase_client", DummyCoinbase())
+
+    snap = app_client.get("/agent/snapshot").json()
+
+    assert snap["source"] == "coinbase"
+    assert all(a.get("container_id") == "coinbase" for a in snap["accounts"])
+    assert all(p.get("container_id") == "coinbase" for p in snap["positions"])
+    assert all(c.get("container_id") == "coinbase" for c in snap["cash"])
