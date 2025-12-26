@@ -44,6 +44,8 @@ class ColdStorageHoldingsProvider(HoldingsProvider):
                     asset=asset_upper,
                     quantity=qty,
                     quote_currency="USD",
+                    price=None,
+                    market_value=None,
                 )
             )
 

@@ -105,3 +105,45 @@ def get_price_provider_id() -> str:
     """
 
     return (_env("FINAGENT_PRICE_PROVIDER") or "coinbase").strip().lower()
+
+
+@dataclass(frozen=True)
+class PlaidCredentials:
+    client_id: str
+    secret: str
+    environment: str
+
+
+def get_plaid_credentials() -> PlaidCredentials:
+    client_id = _env("PLAID_CLIENT_ID")
+    secret = _env("PLAID_SECRET")
+    environment = (_env("PLAID_ENV") or "sandbox").strip().lower()
+
+    if not client_id or not secret:
+        raise RuntimeError("PLAID_CLIENT_ID or PLAID_SECRET not set in environment")
+
+    if environment not in {"sandbox", "development", "production"}:
+        raise RuntimeError("PLAID_ENV must be one of: sandbox, development, production")
+
+    return PlaidCredentials(client_id=client_id, secret=secret, environment=environment)
+
+
+def get_plaid_redirect_uri() -> str | None:
+    return _env("PLAID_REDIRECT_URI")
+
+
+def get_plaid_tokens_path() -> Path:
+    raw = _env("FINAGENT_PLAID_TOKENS_PATH")
+    if raw:
+        return Path(raw).expanduser()
+    return PROJECT_ROOT / ".plaid_tokens.json"
+
+
+def get_plaid_user_id() -> str:
+    # Local single-user mode.
+    return _env("FINAGENT_PLAID_USER_ID") or "local-user"
+
+
+def get_schwab_container_id() -> str:
+    # Stable container id so clients can depend on it.
+    return "schwab"

@@ -5,7 +5,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
-Source = Literal["coinbase", "cold_storage", "aggregate"]
+Source = Literal["coinbase", "cold_storage", "schwab", "aggregate"]
 
 
 class Account(BaseModel):

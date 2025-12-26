@@ -58,3 +58,48 @@ If your client prefers to query these concepts independently (instead of consumi
 You can optionally scope container endpoints to a specific account:
 	- `GET /agent/container/value?source=coinbase&container_id=coinbase&account_id=<account uuid>`
 	- `GET /agent/container/holdings?source=coinbase&container_id=coinbase&account_id=<account uuid>`
+
+## Schwab (Read-Only) via Plaid
+
+This repo supports Schwab *read-only* holdings via Plaid’s Investments product.
+
+### 1) Configure Plaid
+
+Set these environment variables:
+
+- `PLAID_CLIENT_ID`
+- `PLAID_SECRET`
+- `PLAID_ENV` (`sandbox`, `development`, or `production`)
+
+Optional:
+
+- `PLAID_REDIRECT_URI` (only needed for OAuth-based institutions / certain Link flows)
+
+Security note: after linking, an access token is stored locally in `.plaid_tokens.json` (gitignored).
+
+### 2) Link Schwab using Plaid Link
+
+This API exposes two helper endpoints:
+
+- Create a Link token:
+	- `POST /agent/plaid/link_token`
+- Exchange the resulting `public_token` and store it locally:
+	- `POST /agent/plaid/exchange_public_token?public_token=...&institution_name=Schwab`
+
+You’ll need a Plaid Link UI to obtain the `public_token` (e.g., Plaid’s quickstart app).
+
+### 3) Query Schwab containers/accounts/holdings
+
+Once linked, Schwab shows up as:
+
+- `source=schwab`
+- `container_id=schwab`
+
+Accounts within Schwab are exposed as distinct `account_id`s:
+
+- `GET /agent/container/accounts?source=schwab&container_id=schwab`
+
+And holdings can be fetched for the whole container or a specific account:
+
+- `GET /agent/container/holdings?source=schwab&container_id=schwab`
+- `GET /agent/container/holdings?source=schwab&container_id=schwab&account_id=<plaid account_id>`
