@@ -14,6 +14,9 @@ from .pricing_providers import CoinbasePricingProvider
 from .providers.coinbase_provider import CoinbaseHoldingsProvider
 from .providers.cold_storage_provider import ColdStorageHoldingsProvider
 from .providers.schwab_csv_provider import SchwabCsvHoldingsProvider
+from .providers.schwab_plaid_provider import SchwabPlaidHoldingsProvider
+from .plaid_client import create_link_token, exchange_public_token
+from .plaid_store import delete_plaid_item, get_plaid_item, save_plaid_item
 from .models import (
     Account,
     AccountValuation,
@@ -47,6 +50,7 @@ def _get_portfolio_service() -> PortfolioService:
     providers = [
         CoinbaseHoldingsProvider(client=coinbase_client, container_id="coinbase"),
         ColdStorageHoldingsProvider(),
+        SchwabPlaidHoldingsProvider(container_id=settings.get_schwab_container_id()),
         SchwabCsvHoldingsProvider(container_id="schwab"),
     ]
 

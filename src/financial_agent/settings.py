@@ -150,3 +150,18 @@ def get_schwab_export_csv_selector() -> str | None:
     """Optional selector for a CSV menu item after clicking Export (if present)."""
 
     return _env("FINAGENT_SCHWAB_EXPORT_CSV_SELECTOR")
+
+
+def get_schwab_container_id() -> str:
+    """Container id used for Schwab integrations (Plaid and/or direct CSV)."""
+
+    return (_env("FINAGENT_SCHWAB_CONTAINER_ID") or "schwab").strip()
+
+
+def get_plaid_tokens_path() -> Path:
+    """Path to the local Plaid token store (single-user local mode)."""
+
+    raw = _env("FINAGENT_PLAID_TOKENS_PATH")
+    if raw:
+        return Path(raw).expanduser()
+    return PROJECT_ROOT / ".plaid_tokens.json"
