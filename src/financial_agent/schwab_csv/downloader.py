@@ -29,7 +29,7 @@ def download_positions_csv(
     """
 
     # Lazy import so Playwright is only required when using this feature.
-    from playwright.sync_api import sync_playwright  # type: ignore
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright  # type: ignore
 
     profile_dir.mkdir(parents=True, exist_ok=True)
     downloads_dir.mkdir(parents=True, exist_ok=True)
@@ -88,32 +88,80 @@ def download_positions_csv(
                     # Let the page settle; positions pages can load data async.
                     page.wait_for_load_state("networkidle", timeout=60_000)
 
-                    # Try a few export selector strategies.
-                    export_locators = [
-                        page.locator(export_button_selector),
-                        page.get_by_role("button", name=re.compile(r"export", re.I)),
-                        page.locator("text=/\\bExport\\b/i"),
-                    ]
+                    def _click_export() -> None:
+                        # Schwab often renders Export as an icon-only button with aria-label/title="Export".
+                        # The legacy hidden <button id="export">export</button> exists too; avoid text-only.
+                        export_locators = [
+                            page.locator("button#positionspageheader-utility-bar-export-button"),
+                            page.locator('sdps-button[sdps-id="positionspageheader-utility-bar-export"] button'),
+                            page.locator(export_button_selector),
+                            page.get_by_role("button", name=re.compile(r"^export$", re.I)),
+                        ]
 
-                    export_clicked = False
-                    for loc in export_locators:
+                        last: Exception | None = None
+                        for loc in export_locators:
+                            try:
+                                loc.first.wait_for(state="visible", timeout=60_000)
+                                loc.first.click(timeout=60_000)
+                                return
+                            except Exception as exc:
+                                last = exc
+                                continue
+
+                        # As a last resort, click the legacy hidden export button.
                         try:
-                            loc.first.wait_for(state="visible", timeout=60_000)
-                            loc.first.click(timeout=60_000)
-                            export_clicked = True
-                            break
-                        except Exception:
-                            continue
+                            legacy = page.locator("button#export")
+                            legacy.first.wait_for(state="attached", timeout=5_000)
+                            legacy.first.click(timeout=60_000, force=True)
+                            return
+                        except Exception as exc:
+                            last = exc
 
-                    if not export_clicked:
-                        raise RuntimeError(f"Could not find/click Export control using selector: {export_button_selector}")
+                        raise RuntimeError(
+                            f"Could not find/click Export control. selector={export_button_selector!r}; last_error={last}"
+                        )
 
-                    with page.expect_download(timeout=60_000) as d:
-                        # Some UIs open a menu first; optionally click a CSV item.
+                    def _click_csv_item() -> None:
+                        candidates = []
                         if export_csv_selector:
-                            page.locator(export_csv_selector).first.click(timeout=60_000)
+                            candidates.append(page.locator(export_csv_selector))
 
-                    download = d.value
+                        candidates.extend(
+                            [
+                                page.get_by_role("menuitem", name=re.compile(r"csv", re.I)),
+                                page.get_by_role("button", name=re.compile(r"csv", re.I)),
+                                page.locator("text=/\\bCSV\\b/i"),
+                            ]
+                        )
+
+                        last: Exception | None = None
+                        for loc in candidates:
+                            try:
+                                loc.first.wait_for(state="visible", timeout=60_000)
+                                loc.first.click(timeout=60_000)
+                                return
+                            except Exception as exc:
+                                last = exc
+                                continue
+
+                        raise RuntimeError(
+                            "Export click did not start a download, and no CSV option was clickable. "
+                            f"export_csv_selector={export_csv_selector!r}; last_error={last}"
+                        )
+
+                    # Preferred path: Export triggers a download directly.
+                    try:
+                        with page.expect_download(timeout=60_000) as d:
+                            _click_export()
+                        download = d.value
+                    except PlaywrightTimeoutError:
+                        # Some UIs open a menu/modal first; click export again to ensure it's open,
+                        # then click a CSV item inside an expect_download.
+                        _click_export()
+                        with page.expect_download(timeout=60_000) as d:
+                            _click_csv_item()
+                        download = d.value
+
                     download.save_as(str(out_path))
                     return DownloadedFile(path=out_path, as_of=as_of)
                 except Exception as exc:
