@@ -143,7 +143,12 @@ def get_schwab_positions_url() -> str:
 def get_schwab_export_button_selector() -> str:
     """Selector for the Export button on the positions page."""
 
-    return _env("FINAGENT_SCHWAB_EXPORT_BUTTON_SELECTOR") or "text=/Export/i"
+    # Schwab's Positions UI often renders Export as an icon-only button with
+    # aria-label/title="Export" (no visible text). Prefer the stable button id.
+    return (
+        _env("FINAGENT_SCHWAB_EXPORT_BUTTON_SELECTOR")
+        or "button#positionspageheader-utility-bar-export-button"
+    )
 
 
 def get_schwab_export_csv_selector() -> str | None:
