@@ -280,6 +280,11 @@ class PortfolioService:
             key = (a.source, a.container_id)
             container_totals_map[key] = container_totals_map.get(key, Decimal("0")) + Decimal(a.total_value)
 
+        # Include containers even if they currently have no holdings.
+        for c in containers:
+            key = (c.source, c.container_id)
+            container_totals_map.setdefault(key, Decimal("0"))
+
         container_totals: list[ContainerSummary] = []
         for (src, cid), total_value in sorted(container_totals_map.items(), key=lambda kv: (kv[0][0], kv[0][1])):
             container_totals.append(

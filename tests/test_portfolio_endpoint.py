@@ -22,6 +22,8 @@ def app_client(monkeypatch: pytest.MonkeyPatch, tmp_path) -> TestClient:
     monkeypatch.setenv("COINBASE_API_SECRET", "test")
     # Avoid accidentally reading the repo-root cold_storage.json during tests.
     monkeypatch.setenv("FINAGENT_COLD_STORAGE_PATH", str(tmp_path / "missing_cold_storage.json"))
+    # Avoid accidentally reading a real local Plaid token store during tests.
+    monkeypatch.setenv("FINAGENT_PLAID_TOKENS_PATH", str(tmp_path / ".plaid_tokens.json"))
 
     from financial_agent import agent_api
 
