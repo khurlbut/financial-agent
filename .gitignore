@@ -64,6 +64,16 @@ local_settings.py
 db.sqlite3
 db.sqlite3-journal
 
+# financial-agent local data
+financial_agent.sqlite3
+financial_agent.sqlite3-journal
+
+# Local Plaid token store (if used)
+.plaid_tokens.json
+
+# Schwab CSV automation (persistent browser profile)
+profiles/
+
 # Flask stuff:
 instance/
 .webassets-cache

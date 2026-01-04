@@ -64,61 +64,15 @@ You can optionally scope container endpoints to a specific account:
 	- `GET /agent/container/value?source=coinbase&container_id=coinbase&account_id=<account uuid>`
 	- `GET /agent/container/holdings?source=coinbase&container_id=coinbase&account_id=<account uuid>`
 
-## Schwab (Read-Only) via Plaid
+## Schwab (CSV Refresh)
 
-This repo supports Schwab *read-only* holdings via Plaid’s Investments product.
+If you want Schwab holdings without an aggregator, this repo supports a local “download CSV + import” workflow.
 
-### 1) Configure Plaid
+- Install Playwright and the browser:
+	- `pip install -r requirements.txt`
+	- `python -m playwright install chromium`
+- Refresh Schwab holdings (headful; you may need to complete login/MFA manually):
+	- `python -m financial_agent.schwab_refresh`
 
-Set these environment variables:
-
-- `PLAID_CLIENT_ID`
-- `PLAID_SECRET`
-- `PLAID_ENV` (`sandbox` or `production`)
-
-Optional:
-
-- `PLAID_REDIRECT_URI` (only needed for OAuth-based institutions / certain Link flows)
-	- In `PLAID_ENV=production`, Plaid requires this to be an `https://` URL.
-	- For local dev, the simplest approach is to use an HTTPS tunnel (e.g. ngrok/cloudflared) pointing at your local API, and set `PLAID_REDIRECT_URI` to the tunnel URL + `/agent/plaid/link`.
-
-Security note: after linking, an access token is stored locally in `.plaid_tokens.json` (gitignored).
-
-Real Schwab linking note: to connect your *actual* Schwab accounts, use `PLAID_ENV=production` (Plaid refers to live institution connectivity as Production). `sandbox` only supports test institutions.
-
-### 2) Link Schwab using Plaid Link
-
-This API exposes two helper endpoints:
-
-- Create a Link token:
-	- `POST /agent/plaid/link_token`
-- Exchange the resulting `public_token` and store it locally:
-	- `POST /agent/plaid/exchange_public_token?public_token=...&institution_name=Schwab`
-
-You’ll need a Plaid Link UI to obtain the `public_token` (e.g., Plaid’s quickstart app).
-
-This repo also includes a tiny built-in Link helper page served by the API (same origin, no CORS setup):
-
-- Start the API, then open:
-	- `GET /agent/plaid/link`
-
-After linking, you can check and manage local link state:
-
-- `GET /agent/plaid/status`
-- `POST /agent/plaid/unlink`
-
-### 3) Query Schwab containers/accounts/holdings
-
-Once linked, Schwab shows up as:
-
-- `source=schwab`
-- `container_id=schwab`
-
-Accounts within Schwab are exposed as distinct `account_id`s:
-
-- `GET /agent/container/accounts?source=schwab&container_id=schwab`
-
-And holdings can be fetched for the whole container or a specific account:
-
-- `GET /agent/container/holdings?source=schwab&container_id=schwab`
-- `GET /agent/container/holdings?source=schwab&container_id=schwab&account_id=<plaid account_id>`
+This downloads a positions CSV into `downloads/` and imports it into a local SQLite DB (`financial_agent.sqlite3`).
+The imported data is surfaced via the API as container source `schwab_csv` with container id `schwab`.
