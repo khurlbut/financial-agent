@@ -28,6 +28,8 @@ class Holding:
     asset: str
     quantity: Decimal
     quote_currency: str = "USD"
+    price: Decimal | None = None
+    market_value: Decimal | None = None
 
 
 class HoldingsProvider(Protocol):

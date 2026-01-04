@@ -51,6 +51,9 @@ coverage.xml
 .pytest_cache/
 cover/
 
+# Local Plaid access tokens (single-user mode)
+.plaid_tokens.json
+
 # Translations
 *.mo
 *.pot

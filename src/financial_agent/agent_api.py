@@ -1,10 +1,10 @@
 from typing import Any, Dict, List
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
-import os
 
 from fastapi import FastAPI, HTTPException
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import HTMLResponse
 
 from .coinbase_client import CoinbaseClient
 from .cold_storage import load_cold_storage_devices
@@ -13,6 +13,9 @@ from .portfolio_service import PortfolioService
 from .pricing_providers import CoinbasePricingProvider
 from .providers.coinbase_provider import CoinbaseHoldingsProvider
 from .providers.cold_storage_provider import ColdStorageHoldingsProvider
+from .providers.schwab_plaid_provider import SchwabPlaidHoldingsProvider
+from .plaid_client import create_link_token, exchange_public_token
+from .plaid_store import delete_plaid_item, get_plaid_item, save_plaid_item
 from .models import (
     Account,
     AccountValuation,
@@ -24,7 +27,6 @@ from .models import (
     ContainerHoldings,
     ContainerSummaries,
     ContainerSummary,
-    HoldingLine,
     NetWorthSummary,
     PricingInfo,
     PriceQuote,
@@ -47,6 +49,7 @@ def _get_portfolio_service() -> PortfolioService:
     providers = [
         CoinbaseHoldingsProvider(client=coinbase_client, container_id="coinbase"),
         ColdStorageHoldingsProvider(),
+        SchwabPlaidHoldingsProvider(container_id=settings.get_schwab_container_id()),
     ]
 
     # Pricing provider
@@ -57,6 +60,199 @@ def _get_portfolio_service() -> PortfolioService:
 
     pricer = CoinbasePricingProvider(client=coinbase_client)
     return PortfolioService(providers=providers, pricer=pricer)
+
+
+@app.post("/agent/plaid/link_token")
+async def plaid_create_link_token() -> dict:
+    """Create a Plaid Link token.
+
+    Local single-user flow: you use the returned link_token in Plaid Link UI.
+    """
+
+    try:
+        return await run_in_threadpool(create_link_token, client_name="financial-agent")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/agent/plaid/link", response_class=HTMLResponse)
+async def plaid_link_page() -> HTMLResponse:
+        """Tiny built-in Plaid Link helper page.
+
+        This keeps the full Link -> exchange flow on the same origin as the API so
+        you don't need a separate Plaid quickstart app or CORS configuration.
+        """
+
+        html = """<!doctype html>
+<html lang=\"en\">
+    <head>
+        <meta charset=\"utf-8\" />
+        <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+        <title>Plaid Link (financial-agent)</title>
+        <script src=\"https://cdn.plaid.com/link/v2/stable/link-initialize.js\"></script>
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 24px; }
+            button { padding: 10px 14px; font-size: 14px; }
+            pre { background: #f6f8fa; padding: 12px; border-radius: 8px; overflow: auto; }
+        </style>
+    </head>
+    <body>
+        <h2>Plaid Link</h2>
+        <p>This page creates a Plaid <code>link_token</code>, opens Link, then exchanges the <code>public_token</code> via this API.</p>
+        <button id=\"btn\">Connect Schwab</button>
+        <pre id=\"out\">Ready.</pre>
+
+        <script>
+            const out = document.getElementById('out');
+            const btn = document.getElementById('btn');
+
+            function log(obj) {
+                out.textContent = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2);
+            }
+
+            async function createLinkToken() {
+                const resp = await fetch('/agent/plaid/link_token', { method: 'POST' });
+                if (!resp.ok) {
+                    throw new Error('link_token failed: ' + (await resp.text()));
+                }
+                return await resp.json();
+            }
+
+            async function exchangePublicToken(public_token, institution_name) {
+                const params = new URLSearchParams({ public_token });
+                if (institution_name) params.set('institution_name', institution_name);
+
+                const resp = await fetch('/agent/plaid/exchange_public_token?' + params.toString(), { method: 'POST' });
+                if (!resp.ok) {
+                    throw new Error('exchange failed: ' + (await resp.text()));
+                }
+                return await resp.json();
+            }
+
+            btn.addEventListener('click', async () => {
+                btn.disabled = true;
+                try {
+                    log('Creating link_token...');
+                    const tokenResp = await createLinkToken();
+                    const link_token = tokenResp.link_token;
+                    if (!link_token) throw new Error('No link_token returned');
+
+                    const handler = Plaid.create({
+                        token: link_token,
+                        onSuccess: async (public_token, metadata) => {
+                            log({ event: 'onSuccess', public_token, metadata });
+                            const institution = metadata && metadata.institution ? metadata.institution.name : undefined;
+                            const exchanged = await exchangePublicToken(public_token, institution);
+                            log({ linked: true, exchanged });
+                        },
+                        onExit: (err, metadata) => {
+                            // Plaid returns a JS object with useful fields like error_code/error_message.
+                            const errObj = (err && typeof err === 'object') ? {
+                                error_type: err.error_type,
+                                error_code: err.error_code,
+                                error_message: err.error_message,
+                                display_message: err.display_message,
+                                request_id: err.request_id,
+                                status: err.status,
+                            } : (err ? String(err) : null);
+
+                            log({ event: 'onExit', err: errObj, metadata });
+                        },
+                        onEvent: (eventName, metadata) => {
+                            // Uncomment for debugging:
+                            // log({ event: 'onEvent', eventName, metadata });
+                        }
+                    });
+
+                    handler.open();
+                } catch (e) {
+                    log(String(e));
+                } finally {
+                    btn.disabled = false;
+                }
+            });
+        </script>
+    </body>
+</html>"""
+
+        return HTMLResponse(content=html, status_code=200)
+
+
+@app.post("/agent/plaid/exchange_public_token")
+async def plaid_exchange_public_token(
+    public_token: str,
+    institution_name: str | None = "Schwab",
+) -> dict:
+    """Exchange a Plaid public_token and persist the resulting access_token locally."""
+
+    token = (public_token or "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="public_token is required")
+
+    try:
+        resp = await run_in_threadpool(exchange_public_token, public_token=token)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    access_token = resp.get("access_token")
+    item_id = resp.get("item_id")
+    if not isinstance(access_token, str) or not isinstance(item_id, str):
+        raise HTTPException(status_code=502, detail="Plaid exchange did not return access_token/item_id")
+
+    save_plaid_item(
+        container_id=settings.get_schwab_container_id(),
+        access_token=access_token,
+        item_id=item_id,
+        institution_name=institution_name,
+    )
+
+    return {
+        "container_id": settings.get_schwab_container_id(),
+        "item_id": item_id,
+    }
+
+
+@app.get("/agent/plaid/status")
+async def plaid_status(container_id: str | None = None) -> dict:
+    """Return local Plaid link status.
+
+    Local single-user flow: tokens are stored in a local file and never returned
+    by this API.
+    """
+
+    cid = (container_id or settings.get_schwab_container_id()).strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="container_id is required")
+
+    item = get_plaid_item(container_id=cid)
+    if item is None:
+        return {
+            "container_id": cid,
+            "linked": False,
+        }
+
+    return {
+        "container_id": cid,
+        "linked": True,
+        "item_id": item.item_id,
+        "institution_name": item.institution_name,
+        "created_at": item.created_at,
+    }
+
+
+@app.post("/agent/plaid/unlink")
+async def plaid_unlink(container_id: str | None = None) -> dict:
+    """Remove the locally stored Plaid access token for a container."""
+
+    cid = (container_id or settings.get_schwab_container_id()).strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="container_id is required")
+
+    removed = delete_plaid_item(container_id=cid)
+    return {
+        "container_id": cid,
+        "unlinked": removed,
+    }
 
 
 async def _compute_portfolio_valuation() -> PortfolioValuation:
@@ -620,6 +816,11 @@ async def execute_trade(req: TradeRequest, confirm: bool = False) -> TradeExecut
     base_size = req.quantity
     limit_price = req.limit_price or ""
 
+    # We validated this above, but keep the type-checker happy.
+    client_order_id = req.client_order_id
+    if client_order_id is None:
+        raise HTTPException(status_code=400, detail="client_order_id is required")
+
     # Optional: preview with Coinbase first (server-side sanity check).
     try:
         await run_in_threadpool(
@@ -646,7 +847,7 @@ async def execute_trade(req: TradeRequest, confirm: bool = False) -> TradeExecut
     try:
         resp = await run_in_threadpool(
             coinbase_client.place_limit_order_gtc,
-            client_order_id=req.client_order_id,
+            client_order_id=client_order_id,
             symbol_or_product_id=product_id,
             side=req.side,
             base_size=base_size,

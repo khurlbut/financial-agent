@@ -89,11 +89,17 @@ class PortfolioService:
                     asset=asset,
                     quantity=h.quantity,
                     quote_currency=(h.quote_currency or "USD").strip().upper(),
+                    price=h.price,
+                    market_value=h.market_value,
                 )
             )
 
-        # Prices for non-cash assets.
-        price_assets = {h.asset for h in cleaned if h.asset not in ("USD", "USDC")}
+        # Prices for non-cash assets where we *don't* already have an institution-provided value.
+        price_assets = {
+            h.asset
+            for h in cleaned
+            if h.asset not in ("USD", "USDC") and h.market_value is None and h.price is None
+        }
         prices = await self._pricer.get_prices(assets=price_assets, quote_currency="USD")
 
         cash: list[CashBalance] = []
@@ -113,9 +119,9 @@ class PortfolioService:
                 )
                 continue
 
-            price = prices.get(h.asset)
-            mv: Decimal | None = None
-            if price is not None:
+            price = h.price if h.price is not None else prices.get(h.asset)
+            mv: Decimal | None = h.market_value
+            if mv is None and price is not None:
                 mv = h.quantity * price
 
             positions.append(
@@ -264,6 +270,11 @@ class PortfolioService:
                 continue
             key = (a.source, a.container_id)
             container_totals_map[key] = container_totals_map.get(key, Decimal("0")) + Decimal(a.total_value)
+
+        # Include containers even if they currently have no holdings.
+        for c in containers:
+            key = (c.source, c.container_id)
+            container_totals_map.setdefault(key, Decimal("0"))
 
         container_totals: list[ContainerSummary] = []
         for (src, cid), total_value in sorted(container_totals_map.items(), key=lambda kv: (kv[0][0], kv[0][1])):
