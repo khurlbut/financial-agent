@@ -36,6 +36,11 @@ Key fields in the response:
 - `by_container`: per-container totals (e.g., Coinbase, a cold-storage device)
 - `missing_prices`: assets with balances that could not be priced (assets in `FINAGENT_IGNORED_ASSETS` are omitted)
 
+## Branch Notes (Archived Work)
+
+- Plaid (Schwab via Plaid Link) integration work is preserved on branch `schwab-plaid`.
+- The last known-good checkpoint on that line of work is the git tag `plaid-schwab-checkpoint`.
+
 ## Independent Queries (Net Worth / Containers / Holdings)
 
 If your client prefers to query these concepts independently (instead of consuming the full `/agent/portfolio` payload), use:
