@@ -119,11 +119,16 @@ def get_plaid_credentials() -> PlaidCredentials:
     secret = _env("PLAID_SECRET")
     environment = (_env("PLAID_ENV") or "sandbox").strip().lower()
 
+    # Plaid currently exposes two API environments: sandbox and production.
+    # Keep backward compatibility for older guidance that mentioned "development".
+    if environment == "development":
+        environment = "production"
+
     if not client_id or not secret:
         raise RuntimeError("PLAID_CLIENT_ID or PLAID_SECRET not set in environment")
 
-    if environment not in {"sandbox", "development", "production"}:
-        raise RuntimeError("PLAID_ENV must be one of: sandbox, development, production")
+    if environment not in {"sandbox", "production"}:
+        raise RuntimeError("PLAID_ENV must be one of: sandbox, production")
 
     return PlaidCredentials(client_id=client_id, secret=secret, environment=environment)
 

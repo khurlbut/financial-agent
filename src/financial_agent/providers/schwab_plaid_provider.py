@@ -91,8 +91,17 @@ class SchwabPlaidHoldingsProvider(HoldingsProvider):
             sec = sec_by_id.get(security_id, {})
             ticker = sec.get("ticker_symbol")
 
-            # Prefer ticker symbol; fallback to security_id (still valued via institution_value).
-            asset = (ticker if isinstance(ticker, str) and ticker else security_id).strip().upper()
+            sec_type = (sec.get("type") or "").strip().lower() if isinstance(sec.get("type"), str) else ""
+            is_cash = sec_type == "cash" or bool(sec.get("is_cash_equivalent"))
+
+            # Normalize cash/cash-equivalents to USD when possible.
+            # This keeps API output consistent (cash is always USD/USDC).
+            if is_cash:
+                asset = "USD"
+            else:
+                # Prefer ticker symbol; fallback to security_id (still valued via institution_value).
+                asset = (ticker if isinstance(ticker, str) and ticker else security_id).strip().upper()
+
             if not asset or asset in ignored:
                 continue
 
@@ -105,13 +114,6 @@ class SchwabPlaidHoldingsProvider(HoldingsProvider):
 
             if mv is None and price is not None:
                 mv = qty * price
-
-            # Normalize cash to USD when possible.
-            sec_type = (sec.get("type") or "").strip().lower() if isinstance(sec.get("type"), str) else ""
-            is_cash = sec_type == "cash" or bool(sec.get("is_cash_equivalent"))
-            if is_cash and asset not in ("USD", "USDC"):
-                # If Plaid calls it cash-equivalent but no ticker, keep as-is.
-                pass
 
             out.append(
                 Holding(

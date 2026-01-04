@@ -183,6 +183,13 @@ def test_schwab_container_holdings_use_institution_values(app_client: TestClient
             "holdings": [
                 {
                     "account_id": "schwab-acc-1",
+                    "security_id": "sec-cash",
+                    "quantity": "123.45",
+                    "institution_price": "1",
+                    "institution_value": "123.45",
+                },
+                {
+                    "account_id": "schwab-acc-1",
                     "security_id": "sec-aapl",
                     "quantity": "10",
                     "institution_price": "200",
@@ -197,6 +204,7 @@ def test_schwab_container_holdings_use_institution_values(app_client: TestClient
                 },
             ],
             "securities": [
+                {"security_id": "sec-cash", "type": "cash"},
                 {"security_id": "sec-aapl", "ticker_symbol": "AAPL", "type": "equity"},
                 {"security_id": "sec-msft", "ticker_symbol": "MSFT", "type": "equity"},
             ],
@@ -219,6 +227,10 @@ def test_schwab_container_holdings_use_institution_values(app_client: TestClient
     holdings = {(h["asset"], h.get("account_id")): h for h in data["holdings"]}
     assert ("AAPL", "schwab-acc-1") in holdings
     assert ("MSFT", "schwab-acc-2") in holdings
+
+    # Cash security should be normalized to USD.
+    assert ("USD", "schwab-acc-1") in holdings
+    assert Decimal(holdings[("USD", "schwab-acc-1")]["market_value"]) == Decimal("123.45")
 
     assert Decimal(holdings[("AAPL", "schwab-acc-1")]["market_value"]) == Decimal("2000")
     assert Decimal(holdings[("MSFT", "schwab-acc-2")]["market_value"]) == Decimal("3000")
@@ -300,3 +312,9 @@ def test_linked_schwab_container_shows_even_with_no_holdings(app_client: TestCli
 
     schwab = next(c for c in containers["containers"] if c["source"] == "schwab" and c.get("container_id") == "schwab")
     assert Decimal(schwab["total_value"]) == Decimal("0")
+
+
+def test_plaid_link_helper_page_serves(app_client: TestClient):
+    resp = app_client.get("/agent/plaid/link")
+    assert resp.status_code == 200
+    assert "link-initialize.js" in resp.text

@@ -22,10 +22,12 @@ def get_plaid_client() -> Any:
     except Exception as exc:  # pragma: no cover
         raise RuntimeError(f"Plaid SDK not installed or import failed: {exc}")
 
+    # Plaid currently exposes two API environments: sandbox and production.
+    # "development" is treated as an alias of production for backward compatibility.
     env_map = {
         "sandbox": "https://sandbox.plaid.com",
-        "development": "https://development.plaid.com",
         "production": "https://production.plaid.com",
+        "development": "https://production.plaid.com",
     }
 
     configuration = Configuration(
@@ -53,16 +55,27 @@ def create_link_token(*, client_name: str = "financial-agent", country_codes: li
 
     plaid = get_plaid_client()
 
+    creds = settings.get_plaid_credentials()
     redirect_uri = settings.get_plaid_redirect_uri()
+    if creds.environment == "production" and redirect_uri and not redirect_uri.startswith("https://"):
+        raise RuntimeError(
+            "PLAID_REDIRECT_URI must use HTTPS in production. "
+            "Either unset PLAID_REDIRECT_URI (if your institution doesn't require OAuth), "
+            "or use an HTTPS URL (e.g., via ngrok/cloudflared) and register it in the Plaid Dashboard."
+        )
 
-    req = LinkTokenCreateRequest(
-        user=LinkTokenCreateRequestUser(client_user_id=settings.get_plaid_user_id()),
-        client_name=client_name,
-        products=[Products("investments")],
-        country_codes=[CountryCode(c) for c in (country_codes or ["US"])],
-        language="en",
-        redirect_uri=redirect_uri,
-    )
+    kwargs: dict[str, Any] = {
+        "user": LinkTokenCreateRequestUser(client_user_id=settings.get_plaid_user_id()),
+        "client_name": client_name,
+        "products": [Products("investments")],
+        "country_codes": [CountryCode(c) for c in (country_codes or ["US"])],
+        "language": "en",
+    }
+    if redirect_uri:
+        # Only include redirect_uri when set; the Plaid SDK model rejects None.
+        kwargs["redirect_uri"] = redirect_uri
+
+    req = LinkTokenCreateRequest(**kwargs)
 
     resp = plaid.link_token_create(req)
     # SDK returns a model; best-effort to dict.

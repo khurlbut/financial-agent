@@ -4,6 +4,7 @@ from decimal import Decimal, InvalidOperation
 
 from fastapi import FastAPI, HTTPException
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import HTMLResponse
 
 from .coinbase_client import CoinbaseClient
 from .cold_storage import load_cold_storage_devices
@@ -72,6 +73,109 @@ async def plaid_create_link_token() -> dict:
         return await run_in_threadpool(create_link_token, client_name="financial-agent")
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/agent/plaid/link", response_class=HTMLResponse)
+async def plaid_link_page() -> HTMLResponse:
+        """Tiny built-in Plaid Link helper page.
+
+        This keeps the full Link -> exchange flow on the same origin as the API so
+        you don't need a separate Plaid quickstart app or CORS configuration.
+        """
+
+        html = """<!doctype html>
+<html lang=\"en\">
+    <head>
+        <meta charset=\"utf-8\" />
+        <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+        <title>Plaid Link (financial-agent)</title>
+        <script src=\"https://cdn.plaid.com/link/v2/stable/link-initialize.js\"></script>
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 24px; }
+            button { padding: 10px 14px; font-size: 14px; }
+            pre { background: #f6f8fa; padding: 12px; border-radius: 8px; overflow: auto; }
+        </style>
+    </head>
+    <body>
+        <h2>Plaid Link</h2>
+        <p>This page creates a Plaid <code>link_token</code>, opens Link, then exchanges the <code>public_token</code> via this API.</p>
+        <button id=\"btn\">Connect Schwab</button>
+        <pre id=\"out\">Ready.</pre>
+
+        <script>
+            const out = document.getElementById('out');
+            const btn = document.getElementById('btn');
+
+            function log(obj) {
+                out.textContent = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2);
+            }
+
+            async function createLinkToken() {
+                const resp = await fetch('/agent/plaid/link_token', { method: 'POST' });
+                if (!resp.ok) {
+                    throw new Error('link_token failed: ' + (await resp.text()));
+                }
+                return await resp.json();
+            }
+
+            async function exchangePublicToken(public_token, institution_name) {
+                const params = new URLSearchParams({ public_token });
+                if (institution_name) params.set('institution_name', institution_name);
+
+                const resp = await fetch('/agent/plaid/exchange_public_token?' + params.toString(), { method: 'POST' });
+                if (!resp.ok) {
+                    throw new Error('exchange failed: ' + (await resp.text()));
+                }
+                return await resp.json();
+            }
+
+            btn.addEventListener('click', async () => {
+                btn.disabled = true;
+                try {
+                    log('Creating link_token...');
+                    const tokenResp = await createLinkToken();
+                    const link_token = tokenResp.link_token;
+                    if (!link_token) throw new Error('No link_token returned');
+
+                    const handler = Plaid.create({
+                        token: link_token,
+                        onSuccess: async (public_token, metadata) => {
+                            log({ event: 'onSuccess', public_token, metadata });
+                            const institution = metadata && metadata.institution ? metadata.institution.name : undefined;
+                            const exchanged = await exchangePublicToken(public_token, institution);
+                            log({ linked: true, exchanged });
+                        },
+                        onExit: (err, metadata) => {
+                            // Plaid returns a JS object with useful fields like error_code/error_message.
+                            const errObj = (err && typeof err === 'object') ? {
+                                error_type: err.error_type,
+                                error_code: err.error_code,
+                                error_message: err.error_message,
+                                display_message: err.display_message,
+                                request_id: err.request_id,
+                                status: err.status,
+                            } : (err ? String(err) : null);
+
+                            log({ event: 'onExit', err: errObj, metadata });
+                        },
+                        onEvent: (eventName, metadata) => {
+                            // Uncomment for debugging:
+                            // log({ event: 'onEvent', eventName, metadata });
+                        }
+                    });
+
+                    handler.open();
+                } catch (e) {
+                    log(String(e));
+                } finally {
+                    btn.disabled = false;
+                }
+            });
+        </script>
+    </body>
+</html>"""
+
+        return HTMLResponse(content=html, status_code=200)
 
 
 @app.post("/agent/plaid/exchange_public_token")
