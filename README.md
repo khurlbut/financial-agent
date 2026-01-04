@@ -41,6 +41,11 @@ Key fields in the response:
 - Plaid (Schwab via Plaid Link) integration work is preserved on branch `schwab-plaid`.
 - The last known-good checkpoint on that line of work is the git tag `plaid-schwab-checkpoint`.
 
+## Branch Notes (Current Work)
+
+- The branch `schwab-direct` is our attempt to automate retrieval of Schwab investment data via Positions CSV export (Playwright, headful, persistent profile, human-in-the-loop login/MFA).
+- A checkpoint tag for this work is `schwab-direct-csv-checkpoint-20260104`.
+
 ## Independent Queries (Net Worth / Containers / Holdings)
 
 If your client prefers to query these concepts independently (instead of consuming the full `/agent/portfolio` payload), use:
@@ -76,3 +81,7 @@ If you want Schwab holdings without an aggregator, this repo supports a local �
 
 This downloads a positions CSV into `downloads/` and imports it into a local SQLite DB (`financial_agent.sqlite3`).
 The imported data is surfaced via the API as container source `schwab` with container id `schwab`.
+
+Notes:
+- Schwab sometimes opens Export in a popup window/tab; the downloader attempts to handle this.
+- If the Schwab session is wedged (e.g., stuck on an SSO “transition” page), try running with a fresh profile dir via `FINAGENT_SCHWAB_PROFILE_DIR`.

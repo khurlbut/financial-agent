@@ -31,6 +31,9 @@ def download_positions_csv(
     # Lazy import so Playwright is only required when using this feature.
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright  # type: ignore
 
+    # Export generation can be slow; be generous.
+    export_download_timeout_ms = 120_000
+
     profile_dir.mkdir(parents=True, exist_ok=True)
     downloads_dir.mkdir(parents=True, exist_ok=True)
 
@@ -54,10 +57,8 @@ def download_positions_csv(
 
     def _wait_for_user_auth(page) -> None:
         # Keep this human-in-the-loop: user completes login/MFA in the real browser.
-        input(
-            "Complete login/MFA in the opened browser if prompted, then press Enter...\n"
-            f"(Current URL: {page.url})\n"
-        )
+        prompt = "Complete login/MFA in the opened browser, then press Enter..."
+        input(f"{prompt}\n(Current URL: {page.url})\n")
 
     with sync_playwright() as p:
         context = p.chromium.launch_persistent_context(
@@ -68,14 +69,22 @@ def download_positions_csv(
         )
         try:
             page = context.new_page()
-            page.goto(base_url)
+            # Helpful, low-noise signal when a download starts.
+            try:
+                page.on(
+                    "download",
+                    lambda d: print(f"Download event: {d.suggested_filename}") or None,
+                )
+            except Exception:
+                pass
 
-            # Give the user a chance to login/MFA if needed.
-            _wait_for_user_auth(page)
+            # Seed the session and then go straight to Positions.
+            page.goto(base_url, wait_until="domcontentloaded")
 
             # Navigate to positions; if we get bounced back to auth, prompt and retry.
             last_err: Exception | None = None
             for attempt in range(1, 4):
+                print(f"Schwab export attempt {attempt}/3: navigating to Positions…")
                 page.goto(positions_url, wait_until="domcontentloaded")
                 _assert_schwab_url(page.url)
 
@@ -85,8 +94,11 @@ def download_positions_csv(
                     continue
 
                 try:
-                    # Let the page settle; positions pages can load data async.
-                    page.wait_for_load_state("networkidle", timeout=60_000)
+                    # Schwab pages often keep long-lived connections (streaming/polling), so "networkidle"
+                    # can time out forever. Instead, wait for the key UI control we need.
+                    page.locator("button#positionspageheader-utility-bar-export-button").wait_for(
+                        state="visible", timeout=60_000
+                    )
 
                     def _click_export() -> None:
                         # Schwab often renders Export as an icon-only button with aria-label/title="Export".
@@ -121,16 +133,27 @@ def download_positions_csv(
                             f"Could not find/click Export control. selector={export_button_selector!r}; last_error={last}"
                         )
 
-                    def _click_csv_item() -> None:
+                    def _click_csv_item(target_page) -> None:
                         candidates = []
                         if export_csv_selector:
-                            candidates.append(page.locator(export_csv_selector))
+                            candidates.append(target_page.locator(export_csv_selector))
 
                         candidates.extend(
                             [
-                                page.get_by_role("menuitem", name=re.compile(r"csv", re.I)),
-                                page.get_by_role("button", name=re.compile(r"csv", re.I)),
-                                page.locator("text=/\\bCSV\\b/i"),
+                                target_page.get_by_role("menuitem", name=re.compile(r"csv", re.I)),
+                                target_page.get_by_role("button", name=re.compile(r"csv", re.I)),
+                                target_page.locator("text=/\\bCSV\\b/i"),
+                                # Some export dialogs just say "Download".
+                                target_page.get_by_role("button", name=re.compile(r"download", re.I)),
+                                # Icon-based selectors (often more stable than text and can work through shadow DOM).
+                                target_page.locator(
+                                    'use[xlink\\:href="#icon-sch-file-csv"], use[href="#icon-sch-file-csv"]'
+                                )
+                                .locator("xpath=ancestor::button[1]"),
+                                target_page.locator(
+                                    'use[xlink\\:href="#icon-sch-file-csv"], use[href="#icon-sch-file-csv"]'
+                                )
+                                .locator("xpath=ancestor::*[@role='menuitem'][1]"),
                             ]
                         )
 
@@ -151,16 +174,44 @@ def download_positions_csv(
 
                     # Preferred path: Export triggers a download directly.
                     try:
-                        with page.expect_download(timeout=60_000) as d:
+                        with page.expect_download(timeout=export_download_timeout_ms) as d:
                             _click_export()
                         download = d.value
                     except PlaywrightTimeoutError:
-                        # Some UIs open a menu/modal first; click export again to ensure it's open,
-                        # then click a CSV item inside an expect_download.
-                        _click_export()
-                        with page.expect_download(timeout=60_000) as d:
-                            _click_csv_item()
-                        download = d.value
+                        # Some UIs open a popup window/tab for Export.
+                        popup = None
+                        try:
+                            with page.expect_popup(timeout=5_000) as pinfo:
+                                _click_export()
+                            popup = pinfo.value
+                        except Exception:
+                            popup = None
+
+                        if popup is not None:
+                            print(f"Export opened popup: {popup.url}")
+                            popup.wait_for_load_state("domcontentloaded", timeout=60_000)
+                            with popup.expect_download(timeout=export_download_timeout_ms) as d:
+                                _click_csv_item(popup)
+                            download = d.value
+                            try:
+                                popup.close()
+                            except Exception:
+                                pass
+                        else:
+                            # Otherwise, assume Export opened an in-page menu/modal; click export again to ensure it's open,
+                            # then click a CSV item inside an expect_download.
+                            try:
+                                print(
+                                    "No download after clicking Export. "
+                                    f"visible dialogs={page.locator('[role=dialog]:visible').count()} "
+                                    f"visible menus={page.locator('[role=menu]:visible').count()}"
+                                )
+                            except Exception:
+                                pass
+                            _click_export()
+                            with page.expect_download(timeout=export_download_timeout_ms) as d:
+                                _click_csv_item(page)
+                            download = d.value
 
                     download.save_as(str(out_path))
                     return DownloadedFile(path=out_path, as_of=as_of)
@@ -174,8 +225,12 @@ def download_positions_csv(
                         debug_prefix.with_suffix(f".attempt{attempt}.html").write_text(page.content(), encoding="utf-8")
                     except Exception:
                         pass
-                    # One more chance in case we were mid-redirect/MFA.
-                    _wait_for_user_auth(page)
+
+                    # Only prompt the user if we're actually on an auth flow.
+                    if _looks_like_auth_flow(page.url):
+                        _wait_for_user_auth(page)
+
+                    # Otherwise, continue retrying without blocking on stdin.
                     continue
 
             raise RuntimeError(
@@ -184,4 +239,8 @@ def download_positions_csv(
                 f"Last error: {last_err}"
             )
         finally:
-            context.close()
+            try:
+                context.close()
+            except Exception:
+                # Common when user hits Ctrl-C while Playwright is mid-flight.
+                pass
