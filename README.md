@@ -41,10 +41,12 @@ Key fields in the response:
 - Plaid (Schwab via Plaid Link) integration work is preserved on branch `schwab-plaid`.
 - The last known-good checkpoint on that line of work is the git tag `plaid-schwab-checkpoint`.
 
+- Schwab CSV download automation (Playwright) work is preserved on branch `schwab-direct`.
+- The checkpoint tag for that work is `schwab-direct-csv-checkpoint-20260104`.
+
 ## Branch Notes (Current Work)
 
-- The branch `schwab-direct` is our attempt to automate retrieval of Schwab investment data via Positions CSV export (Playwright, headful, persistent profile, human-in-the-loop login/MFA).
-- A checkpoint tag for this work is `schwab-direct-csv-checkpoint-20260104`.
+- The branch `schwab-manual` uses a manual CSV download flow: you download Schwab Positions CSV files yourself, and this repo imports them into SQLite for the API.
 
 ## Independent Queries (Net Worth / Containers / Holdings)
 
@@ -71,17 +73,11 @@ You can optionally scope container endpoints to a specific account:
 
 ## Schwab (CSV Refresh)
 
-If you want Schwab holdings without an aggregator, this repo supports a local “download CSV + import” workflow.
+If you want Schwab holdings without an aggregator, this repo supports a local “manual download CSV + import” workflow.
 
-- Install Playwright and the browser:
-	- `pip install -r requirements.txt`
-	- `python -m playwright install chromium`
-- Refresh Schwab holdings (headful; you may need to complete login/MFA manually):
-	- `python -m financial_agent.schwab_refresh`
+- Download a Schwab Positions CSV manually.
+- Import it into the local SQLite DB:
+	- `python -m financial_agent.schwab_refresh --csv /path/to/positions.csv`
+	- or (imports the most recent `*.csv` in a directory): `python -m financial_agent.schwab_refresh --csv-dir downloads`
 
-This downloads a positions CSV into `downloads/` and imports it into a local SQLite DB (`financial_agent.sqlite3`).
 The imported data is surfaced via the API as container source `schwab` with container id `schwab`.
-
-Notes:
-- Schwab sometimes opens Export in a popup window/tab; the downloader attempts to handle this.
-- If the Schwab session is wedged (e.g., stuck on an SSO “transition” page), try running with a fresh profile dir via `FINAGENT_SCHWAB_PROFILE_DIR`.
