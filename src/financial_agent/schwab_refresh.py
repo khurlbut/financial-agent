@@ -20,7 +20,7 @@ def main() -> None:
         "--csv-dir",
         type=str,
         default=None,
-        help="Directory containing Schwab positions CSVs; imports the most recently modified *.csv",
+        help="Directory containing Schwab positions CSVs; imports all *.csv files (sorted by mtime)",
     )
     args = parser.parse_args()
 
@@ -35,10 +35,10 @@ def main() -> None:
         csv_dir = Path(args.csv_dir).expanduser()
         if not csv_dir.exists() or not csv_dir.is_dir():
             raise SystemExit(f"CSV dir not found: {csv_dir}")
-        candidates = sorted(csv_dir.glob("*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)
+        candidates = sorted(csv_dir.glob("*.csv"), key=lambda p: p.stat().st_mtime)
         if not candidates:
             raise SystemExit(f"No .csv files found in: {csv_dir}")
-        csv_paths.append(candidates[0])
+        csv_paths.extend(candidates)
 
     if not csv_paths:
         default_dir = settings.get_schwab_downloads_dir()

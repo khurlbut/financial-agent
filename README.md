@@ -78,6 +78,6 @@ If you want Schwab holdings without an aggregator, this repo supports a local â€
 - Download a Schwab Positions CSV manually.
 - Import it into the local SQLite DB:
 	- `python -m financial_agent.schwab_refresh --csv /path/to/positions.csv`
-	- or (imports the most recent `*.csv` in a directory): `python -m financial_agent.schwab_refresh --csv-dir downloads`
+	- or (imports all `*.csv` in a directory): `python -m financial_agent.schwab_refresh --csv-dir downloads`
 
 The imported data is surfaced via the API as container source `schwab` with container id `schwab`.
