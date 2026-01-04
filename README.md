@@ -63,3 +63,16 @@ If your client prefers to query these concepts independently (instead of consumi
 You can optionally scope container endpoints to a specific account:
 	- `GET /agent/container/value?source=coinbase&container_id=coinbase&account_id=<account uuid>`
 	- `GET /agent/container/holdings?source=coinbase&container_id=coinbase&account_id=<account uuid>`
+
+## Schwab (CSV Refresh)
+
+If you want Schwab holdings without an aggregator, this repo supports a local “download CSV + import” workflow.
+
+- Install Playwright and the browser:
+	- `pip install -r requirements.txt`
+	- `python -m playwright install chromium`
+- Refresh Schwab holdings (headful; you may need to complete login/MFA manually):
+	- `python -m financial_agent.schwab_refresh`
+
+This downloads a positions CSV into `downloads/` and imports it into a local SQLite DB (`financial_agent.sqlite3`).
+The imported data is surfaced via the API as container source `schwab_csv` with container id `schwab`.

@@ -13,6 +13,7 @@ from .portfolio_service import PortfolioService
 from .pricing_providers import CoinbasePricingProvider
 from .providers.coinbase_provider import CoinbaseHoldingsProvider
 from .providers.cold_storage_provider import ColdStorageHoldingsProvider
+from .providers.schwab_csv_provider import SchwabCsvHoldingsProvider
 from .models import (
     Account,
     AccountValuation,
@@ -47,6 +48,7 @@ def _get_portfolio_service() -> PortfolioService:
     providers = [
         CoinbaseHoldingsProvider(client=coinbase_client, container_id="coinbase"),
         ColdStorageHoldingsProvider(),
+        SchwabCsvHoldingsProvider(container_id="schwab"),
     ]
 
     # Pricing provider

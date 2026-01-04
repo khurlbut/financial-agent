@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+httpx
+python-dotenv
+coinbase-advanced-py
+plaid-python
+playwright
+pytest

@@ -89,12 +89,18 @@ class PortfolioService:
                     asset=asset,
                     quantity=h.quantity,
                     quote_currency=(h.quote_currency or "USD").strip().upper(),
+                    price=h.price,
+                    market_value=h.market_value,
                 )
             )
 
-        # Prices for non-cash assets.
-        price_assets = {h.asset for h in cleaned if h.asset not in ("USD", "USDC")}
-        prices = await self._pricer.get_prices(assets=price_assets, quote_currency="USD")
+        # Prices for non-cash assets that lack institution-provided valuation.
+        price_assets = {
+            h.asset
+            for h in cleaned
+            if h.asset not in ("USD", "USDC") and h.price is None and h.market_value is None
+        }
+        prices = await self._pricer.get_prices(assets=price_assets, quote_currency="USD") if price_assets else {}
 
         cash: list[CashBalance] = []
         positions: list[Position] = []
@@ -113,10 +119,19 @@ class PortfolioService:
                 )
                 continue
 
-            price = prices.get(h.asset)
-            mv: Decimal | None = None
-            if price is not None:
+            price: Decimal | None = h.price
+            mv: Decimal | None = h.market_value
+
+            if mv is None and price is None:
+                price = prices.get(h.asset)
+            if mv is None and price is not None:
                 mv = h.quantity * price
+            if price is None and mv is not None and h.quantity > 0:
+                # Backfill an implied price when only market value is provided.
+                try:
+                    price = mv / h.quantity
+                except Exception:
+                    price = None
 
             positions.append(
                 Position(

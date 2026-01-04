@@ -105,3 +105,48 @@ def get_price_provider_id() -> str:
     """
 
     return (_env("FINAGENT_PRICE_PROVIDER") or "coinbase").strip().lower()
+
+
+def get_finagent_db_path() -> Path:
+    """Path to the local SQLite DB used for scraped/imported holdings."""
+
+    raw = _env("FINAGENT_DB_PATH")
+    if raw:
+        return Path(raw).expanduser()
+    return PROJECT_ROOT / "financial_agent.sqlite3"
+
+
+def get_schwab_profile_dir() -> Path:
+    """Playwright persistent profile directory for Schwab browser state."""
+
+    raw = _env("FINAGENT_SCHWAB_PROFILE_DIR")
+    if raw:
+        return Path(raw).expanduser()
+    return PROJECT_ROOT / "profiles" / "schwab"
+
+
+def get_schwab_downloads_dir() -> Path:
+    """Directory where Schwab CSV exports are saved."""
+
+    raw = _env("FINAGENT_SCHWAB_DOWNLOADS_DIR")
+    if raw:
+        return Path(raw).expanduser()
+    return PROJECT_ROOT / "downloads"
+
+
+def get_schwab_positions_url() -> str:
+    """URL for Schwab positions/holdings page used for CSV export."""
+
+    return _env("FINAGENT_SCHWAB_POSITIONS_URL") or "https://client.schwab.com/app/accounts/positions/#/"
+
+
+def get_schwab_export_button_selector() -> str:
+    """Selector for the Export button on the positions page."""
+
+    return _env("FINAGENT_SCHWAB_EXPORT_BUTTON_SELECTOR") or "text=/Export/i"
+
+
+def get_schwab_export_csv_selector() -> str | None:
+    """Optional selector for a CSV menu item after clicking Export (if present)."""
+
+    return _env("FINAGENT_SCHWAB_EXPORT_CSV_SELECTOR")
