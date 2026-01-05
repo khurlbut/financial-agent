@@ -27,6 +27,7 @@ def import_positions_csv(
     snapshot_id: int | None = None,
     container_id: str | None = None,
     account_name_override: str | None = None,
+    force_account_name_override: bool = False,
 ) -> ImportedSnapshot:
     """Import a Morgan Stanley positions export (.csv or .xlsx) into SQLite.
 
@@ -61,8 +62,10 @@ def import_positions_csv(
                 continue
 
             norm = _normalize_row(row)
-            if (norm.get("account_name") is None) and account_name_override:
-                norm["account_name"] = account_name_override
+            if account_name_override:
+                existing_account = norm.get("account_name")
+                if force_account_name_override or existing_account is None or not str(existing_account).strip():
+                    norm["account_name"] = account_name_override
             if norm.get("symbol") is None:
                 continue
 
@@ -243,6 +246,10 @@ def _is_empty_row(row: dict[Any, Any]) -> bool:
 
 
 def _is_summary_row(row: dict[Any, Any]) -> bool:
+    account = _get(row, "Account", "Account Name", "Account Number")
+    if account and account.strip().lower() in {"total", "grand total"}:
+        return True
+
     symbol = _get(row, "Symbol", "Ticker")
     if symbol and symbol.strip().lower().startswith("account total"):
         return True
