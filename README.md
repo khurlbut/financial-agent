@@ -113,3 +113,24 @@ Pricing provider options:
 - `FINAGENT_PRICE_PROVIDER=coinbase` (default): good for crypto; equities will likely show up in `missing_prices`.
 - `FINAGENT_PRICE_PROVIDER=stooq`: no-key equities/ETFs pricing via stooq.com (often delayed/EOD).
 - `FINAGENT_PRICE_PROVIDER=composite`: tries Coinbase first, then stooq.com (recommended if you have both crypto + equities).
+
+## Morgan Stanley (CSV Refresh)
+
+This repo also supports a manual “download CSV + import” workflow for Morgan Stanley.
+
+- Download an account positions/holdings CSV manually.
+- Import it into the local SQLite DB:
+	- `python -m financial_agent.morgan_stanley_refresh --csv /path/to/positions.csv`
+	- or (imports all `*.csv` in a directory): `python -m financial_agent.morgan_stanley_refresh --csv-dir downloads/morgan_stanley`
+
+The imported data is surfaced via the API as container source `morgan_stanley` with container ids based on `--container-id` (e.g. `kev`, `deb`).
+
+### Live Pricing vs CSV Pricing (Morgan Stanley)
+
+By default, Morgan Stanley CSV imports are treated as *positions-only* and priced live:
+
+- `FINAGENT_MORGAN_STANLEY_CSV_PRICE_MODE=live` (default)
+
+If you want to trust the CSV’s `price` and/or `market_value` columns instead, set:
+
+- `FINAGENT_MORGAN_STANLEY_CSV_PRICE_MODE=csv`

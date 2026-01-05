@@ -181,6 +181,20 @@ def get_schwab_csv_price_mode() -> str:
         return (_env("FINAGENT_SCHWAB_CSV_PRICE_MODE") or "csv").strip().lower()
 
 
+def get_morgan_stanley_csv_price_mode() -> str:
+        """How to value Morgan Stanley CSV positions.
+
+        - "csv": trust the price/market_value columns in the exported CSV (if present).
+        - "live": treat the CSV as positions-only (quantity); pull prices in real time
+            from the configured pricing provider.
+
+        Defaults to "live" since Morgan Stanley is a traditional broker and we
+        generally want third-party equity pricing.
+        """
+
+        return (_env("FINAGENT_MORGAN_STANLEY_CSV_PRICE_MODE") or "live").strip().lower()
+
+
 def get_plaid_tokens_path() -> Path:
     """Path to the local Plaid token store (single-user local mode)."""
 
