@@ -20,7 +20,14 @@ class ImportedSnapshot:
     rows_imported: int
 
 
-def import_positions_csv(*, db_path: Path, csv_path: Path, as_of: datetime | None = None) -> ImportedSnapshot:
+def import_positions_csv(
+    *,
+    db_path: Path,
+    csv_path: Path,
+    as_of: datetime | None = None,
+    snapshot_id: int | None = None,
+    container_id: str | None = None,
+) -> ImportedSnapshot:
     """Import a Schwab positions CSV into SQLite.
 
     This is intentionally best-effort: Schwab can change headers/format.
@@ -32,7 +39,9 @@ def import_positions_csv(*, db_path: Path, csv_path: Path, as_of: datetime | Non
 
     conn = db.connect(db_path)
     try:
-        snapshot_id = db.insert_snapshot(conn, as_of=as_of, csv_path=csv_path)
+        if snapshot_id is None:
+            cid = (container_id or "").strip() or "schwab"
+            snapshot_id = db.insert_snapshot(conn, container_id=cid, as_of=as_of, csv_path=csv_path)
 
         rows_imported = 0
         with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
@@ -89,7 +98,7 @@ def import_positions_csv(*, db_path: Path, csv_path: Path, as_of: datetime | Non
                 rows_imported += 1
 
         conn.commit()
-        return ImportedSnapshot(snapshot_id=snapshot_id, as_of=as_of, rows_imported=rows_imported)
+        return ImportedSnapshot(snapshot_id=int(snapshot_id), as_of=as_of, rows_imported=rows_imported)
     finally:
         conn.close()
 

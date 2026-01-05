@@ -26,6 +26,10 @@ def app_client(monkeypatch: pytest.MonkeyPatch, tmp_path) -> TestClient:
     monkeypatch.setenv("FINAGENT_PLAID_TOKENS_PATH", str(tmp_path / ".plaid_tokens.json"))
     # Use an isolated SQLite DB for tests (avoid picking up any local Schwab imports).
     monkeypatch.setenv("FINAGENT_DB_PATH", str(tmp_path / "financial_agent_test.sqlite3"))
+    # Avoid picking up any local .env Schwab live pricing setting.
+    monkeypatch.setenv("FINAGENT_SCHWAB_CSV_PRICE_MODE", "csv")
+    # Avoid picking up any local .env pricing provider setting.
+    monkeypatch.setenv("FINAGENT_PRICE_PROVIDER", "coinbase")
 
     from financial_agent import agent_api
 

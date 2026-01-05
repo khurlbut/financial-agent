@@ -81,3 +81,35 @@ If you want Schwab holdings without an aggregator, this repo supports a local �
 	- or (imports all `*.csv` in a directory): `python -m financial_agent.schwab_refresh --csv-dir downloads`
 
 The imported data is surfaced via the API as container source `schwab` with container id `schwab`.
+
+### Multiple Schwab Logins (Containers)
+
+If you have multiple Schwab logins (e.g., yours and your spouse’s), model each login as its own Schwab **container**.
+
+Example:
+
+- Your login: `container_id=kev`
+- Spouse login: `container_id=deb`
+
+Import each login’s CSVs with `--container-id`:
+
+- `python -m financial_agent.schwab_refresh --container-id kev --csv-dir downloads/kev`
+- `python -m financial_agent.schwab_refresh --container-id deb --csv-dir downloads/deb`
+
+Within each container, individual Schwab accounts (ROTH, Brokerage, etc.) are exposed as `account_id` values.
+
+### Live Pricing vs CSV Pricing (Schwab)
+
+By default, Schwab CSV imports include price and market value columns, and the API will use those values.
+
+If you want *positions-only* from the CSV (quantity) and *live pricing* at request time, set:
+
+- `FINAGENT_SCHWAB_CSV_PRICE_MODE=live`
+
+In live mode, the Schwab CSV provider omits CSV `price` and `market_value` for non-cash assets, which forces the valuation layer to request prices from the active pricing provider.
+
+Pricing provider options:
+
+- `FINAGENT_PRICE_PROVIDER=coinbase` (default): good for crypto; equities will likely show up in `missing_prices`.
+- `FINAGENT_PRICE_PROVIDER=stooq`: no-key equities/ETFs pricing via stooq.com (often delayed/EOD).
+- `FINAGENT_PRICE_PROVIDER=composite`: tries Coinbase first, then stooq.com (recommended if you have both crypto + equities).
