@@ -107,6 +107,13 @@ def get_price_provider_id() -> str:
     return (_env("FINAGENT_PRICE_PROVIDER") or "coinbase").strip().lower()
 
 
+def get_price_provider_id_raw() -> str | None:
+    """Return FINAGENT_PRICE_PROVIDER if explicitly set, else None."""
+
+    raw = _env("FINAGENT_PRICE_PROVIDER")
+    return raw.strip().lower() if raw else None
+
+
 def get_finagent_db_path() -> Path:
     """Path to the local SQLite DB used for scraped/imported holdings."""
 
@@ -161,6 +168,17 @@ def get_schwab_container_id() -> str:
     """Container id used for Schwab integrations (Plaid and/or direct CSV)."""
 
     return (_env("FINAGENT_SCHWAB_CONTAINER_ID") or "schwab").strip()
+
+
+def get_schwab_csv_price_mode() -> str:
+        """How to value Schwab CSV positions.
+
+        - "csv": trust the price/market_value columns in the downloaded Schwab CSV.
+        - "live": treat the CSV as positions-only (quantity); pull prices in real time
+            from the configured pricing provider.
+        """
+
+        return (_env("FINAGENT_SCHWAB_CSV_PRICE_MODE") or "csv").strip().lower()
 
 
 def get_plaid_tokens_path() -> Path:

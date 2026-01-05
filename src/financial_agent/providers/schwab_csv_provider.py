@@ -13,21 +13,31 @@ class SchwabCsvHoldingsProvider(HoldingsProvider):
 
     source = "schwab_csv"
 
-    def __init__(self, *, container_id: str = "schwab") -> None:
-        self._container_id = container_id
+    def __init__(self) -> None:
+        pass
 
     async def list_containers(self) -> list[ContainerRef]:
-        # Always advertise the container so clients see it's available,
-        # even if no snapshot has been imported yet.
-        return [ContainerRef(source=self.source, container_id=self._container_id, name="Schwab (CSV)")]
+        conn = schwab_db.connect(settings.get_finagent_db_path())
+        try:
+            cids = schwab_db.list_container_ids(conn)
+        finally:
+            conn.close()
+
+        # Mirror the unified provider behavior: hide legacy 'schwab' when there
+        # are other explicit container ids present.
+        if "schwab" in cids and any(cid != "schwab" for cid in cids):
+            cids = [c for c in cids if c != "schwab"]
+
+        return [ContainerRef(source=self.source, container_id=cid, name=f"Schwab (CSV: {cid})") for cid in cids]
 
     async def list_accounts(self, *, container_id: str) -> list[AccountRef]:
-        if container_id != self._container_id:
+        cid = (container_id or "").strip()
+        if not cid:
             return []
 
         conn = schwab_db.connect(settings.get_finagent_db_path())
         try:
-            snap = schwab_db.get_latest_snapshot(conn)
+            snap = schwab_db.get_latest_snapshot(conn, container_id=cid)
             if snap is None:
                 return []
 
@@ -47,7 +57,7 @@ class SchwabCsvHoldingsProvider(HoldingsProvider):
                 out.append(
                     AccountRef(
                         source=self.source,
-                        container_id=self._container_id,
+                        container_id=cid,
                         account_id=name,
                         name=name,
                     )
@@ -57,12 +67,15 @@ class SchwabCsvHoldingsProvider(HoldingsProvider):
             conn.close()
 
     async def get_holdings(self, *, container_id: str) -> list[Holding]:
-        if container_id != self._container_id:
+        cid = (container_id or "").strip()
+        if not cid:
             return []
+
+        price_mode = settings.get_schwab_csv_price_mode()
 
         conn = schwab_db.connect(settings.get_finagent_db_path())
         try:
-            snap = schwab_db.get_latest_snapshot(conn)
+            snap = schwab_db.get_latest_snapshot(conn, container_id=cid)
             if snap is None:
                 return []
 
@@ -92,13 +105,20 @@ class SchwabCsvHoldingsProvider(HoldingsProvider):
                 if qty <= 0:
                     continue
 
-                price = _parse_decimal(price_s) if price_s is not None else None
-                mv = _parse_decimal(mv_s) if mv_s is not None else None
+                price: Decimal | None = None
+                mv: Decimal | None = None
+
+                # In "live" mode, the Schwab CSV is treated as positions-only.
+                # We omit CSV prices/market values so the valuation layer pulls
+                # pricing from the active pricing provider.
+                if price_mode != "live" or asset in ("USD", "USDC"):
+                    price = _parse_decimal(price_s) if price_s is not None else None
+                    mv = _parse_decimal(mv_s) if mv_s is not None else None
 
                 holdings.append(
                     Holding(
                         source=self.source,
-                        container_id=self._container_id,
+                        container_id=cid,
                         account_id=str(account_name) if account_name is not None and str(account_name).strip() else None,
                         asset=asset,
                         quantity=qty,

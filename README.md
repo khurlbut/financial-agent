@@ -41,10 +41,12 @@ Key fields in the response:
 - Plaid (Schwab via Plaid Link) integration work is preserved on branch `schwab-plaid`.
 - The last known-good checkpoint on that line of work is the git tag `plaid-schwab-checkpoint`.
 
+- Schwab CSV download automation (Playwright) work is preserved on branch `schwab-direct`.
+- The checkpoint tag for that work is `schwab-direct-csv-checkpoint-20260104`.
+
 ## Branch Notes (Current Work)
 
-- The branch `schwab-direct` is our attempt to automate retrieval of Schwab investment data via Positions CSV export (Playwright, headful, persistent profile, human-in-the-loop login/MFA).
-- A checkpoint tag for this work is `schwab-direct-csv-checkpoint-20260104`.
+- The branch `schwab-manual` uses a manual CSV download flow: you download Schwab Positions CSV files yourself, and this repo imports them into SQLite for the API.
 
 ## Independent Queries (Net Worth / Containers / Holdings)
 
@@ -71,17 +73,43 @@ You can optionally scope container endpoints to a specific account:
 
 ## Schwab (CSV Refresh)
 
-If you want Schwab holdings without an aggregator, this repo supports a local “download CSV + import” workflow.
+If you want Schwab holdings without an aggregator, this repo supports a local “manual download CSV + import” workflow.
 
-- Install Playwright and the browser:
-	- `pip install -r requirements.txt`
-	- `python -m playwright install chromium`
-- Refresh Schwab holdings (headful; you may need to complete login/MFA manually):
-	- `python -m financial_agent.schwab_refresh`
+- Download a Schwab Positions CSV manually.
+- Import it into the local SQLite DB:
+	- `python -m financial_agent.schwab_refresh --csv /path/to/positions.csv`
+	- or (imports all `*.csv` in a directory): `python -m financial_agent.schwab_refresh --csv-dir downloads`
 
-This downloads a positions CSV into `downloads/` and imports it into a local SQLite DB (`financial_agent.sqlite3`).
 The imported data is surfaced via the API as container source `schwab` with container id `schwab`.
 
-Notes:
-- Schwab sometimes opens Export in a popup window/tab; the downloader attempts to handle this.
-- If the Schwab session is wedged (e.g., stuck on an SSO “transition” page), try running with a fresh profile dir via `FINAGENT_SCHWAB_PROFILE_DIR`.
+### Multiple Schwab Logins (Containers)
+
+If you have multiple Schwab logins (e.g., yours and your spouse’s), model each login as its own Schwab **container**.
+
+Example:
+
+- Your login: `container_id=kev`
+- Spouse login: `container_id=deb`
+
+Import each login’s CSVs with `--container-id`:
+
+- `python -m financial_agent.schwab_refresh --container-id kev --csv-dir downloads/kev`
+- `python -m financial_agent.schwab_refresh --container-id deb --csv-dir downloads/deb`
+
+Within each container, individual Schwab accounts (ROTH, Brokerage, etc.) are exposed as `account_id` values.
+
+### Live Pricing vs CSV Pricing (Schwab)
+
+By default, Schwab CSV imports include price and market value columns, and the API will use those values.
+
+If you want *positions-only* from the CSV (quantity) and *live pricing* at request time, set:
+
+- `FINAGENT_SCHWAB_CSV_PRICE_MODE=live`
+
+In live mode, the Schwab CSV provider omits CSV `price` and `market_value` for non-cash assets, which forces the valuation layer to request prices from the active pricing provider.
+
+Pricing provider options:
+
+- `FINAGENT_PRICE_PROVIDER=coinbase` (default): good for crypto; equities will likely show up in `missing_prices`.
+- `FINAGENT_PRICE_PROVIDER=stooq`: no-key equities/ETFs pricing via stooq.com (often delayed/EOD).
+- `FINAGENT_PRICE_PROVIDER=composite`: tries Coinbase first, then stooq.com (recommended if you have both crypto + equities).

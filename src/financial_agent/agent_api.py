@@ -10,7 +10,7 @@ from .coinbase_client import CoinbaseClient
 from .cold_storage import load_cold_storage_devices
 from . import settings
 from .portfolio_service import PortfolioService
-from .pricing_providers import CoinbasePricingProvider
+from .pricing_providers import CoinbasePricingProvider, CompositePricingProvider, StooqPricingProvider
 from .providers.coinbase_provider import CoinbaseHoldingsProvider
 from .providers.cold_storage_provider import ColdStorageHoldingsProvider
 from .providers.schwab_provider import SchwabHoldingsProvider
@@ -49,16 +49,36 @@ def _get_portfolio_service() -> PortfolioService:
     providers = [
         CoinbaseHoldingsProvider(client=coinbase_client, container_id="coinbase"),
         ColdStorageHoldingsProvider(),
-        SchwabHoldingsProvider(container_id=settings.get_schwab_container_id()),
+        SchwabHoldingsProvider(),
     ]
 
     # Pricing provider
+    # If Schwab CSV is in "live" mode, equities need a non-Coinbase pricing
+    # source (e.g., Stooq). When the user has not explicitly configured a price
+    # provider, prefer composite so Schwab totals don't collapse to cash-only.
     provider_id = settings.get_price_provider_id()
-    if provider_id != "coinbase":
-        # Keep v1 conservative: only Coinbase pricing implemented.
+    if settings.get_schwab_csv_price_mode() == "live" and settings.get_price_provider_id_raw() is None:
+        provider_id = "composite"
+
+    if provider_id == "coinbase":
+        pricer = CoinbasePricingProvider(client=coinbase_client)
+    elif provider_id == "stooq":
+        pricer = StooqPricingProvider()
+    elif provider_id in {"composite", "coinbase+stooq", "stooq+coinbase"}:
+        # CoinbasePricingProvider is guarded to avoid hitting Coinbase market data
+        # for non-crypto symbols, so it's safe (and faster for crypto-heavy
+        # portfolios) to try Coinbase first by default.
+        if provider_id == "stooq+coinbase":
+            pricer = CompositePricingProvider(
+                providers=[StooqPricingProvider(), CoinbasePricingProvider(client=coinbase_client)]
+            )
+        else:
+            pricer = CompositePricingProvider(
+                providers=[CoinbasePricingProvider(client=coinbase_client), StooqPricingProvider()]
+            )
+    else:
         raise HTTPException(status_code=500, detail=f"Unsupported pricing provider: {provider_id}")
 
-    pricer = CoinbasePricingProvider(client=coinbase_client)
     return PortfolioService(providers=providers, pricer=pricer)
 
 
