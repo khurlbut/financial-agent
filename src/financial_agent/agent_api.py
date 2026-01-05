@@ -13,6 +13,7 @@ from .portfolio_service import PortfolioService
 from .pricing_providers import CoinbasePricingProvider, CompositePricingProvider, StooqPricingProvider
 from .providers.coinbase_provider import CoinbaseHoldingsProvider
 from .providers.cold_storage_provider import ColdStorageHoldingsProvider
+from .providers.morgan_stanley_provider import MorganStanleyHoldingsProvider
 from .providers.schwab_provider import SchwabHoldingsProvider
 from .plaid_client import create_link_token, exchange_public_token
 from .plaid_store import delete_plaid_item, get_plaid_item, save_plaid_item
@@ -50,6 +51,7 @@ def _get_portfolio_service() -> PortfolioService:
         CoinbaseHoldingsProvider(client=coinbase_client, container_id="coinbase"),
         ColdStorageHoldingsProvider(),
         SchwabHoldingsProvider(),
+        MorganStanleyHoldingsProvider(),
     ]
 
     # Pricing provider
@@ -57,8 +59,9 @@ def _get_portfolio_service() -> PortfolioService:
     # source (e.g., Stooq). When the user has not explicitly configured a price
     # provider, prefer composite so Schwab totals don't collapse to cash-only.
     provider_id = settings.get_price_provider_id()
-    if settings.get_schwab_csv_price_mode() == "live" and settings.get_price_provider_id_raw() is None:
-        provider_id = "composite"
+    if settings.get_price_provider_id_raw() is None:
+        if settings.get_schwab_csv_price_mode() == "live" or settings.get_morgan_stanley_csv_price_mode() == "live":
+            provider_id = "composite"
 
     if provider_id == "coinbase":
         pricer = CoinbasePricingProvider(client=coinbase_client)
