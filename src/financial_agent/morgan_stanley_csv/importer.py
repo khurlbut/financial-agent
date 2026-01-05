@@ -26,6 +26,7 @@ def import_positions_csv(
     as_of: datetime | None = None,
     snapshot_id: int | None = None,
     container_id: str | None = None,
+    account_name_override: str | None = None,
 ) -> ImportedSnapshot:
     """Import a Morgan Stanley positions export (.csv or .xlsx) into SQLite.
 
@@ -60,6 +61,8 @@ def import_positions_csv(
                 continue
 
             norm = _normalize_row(row)
+            if (norm.get("account_name") is None) and account_name_override:
+                norm["account_name"] = account_name_override
             if norm.get("symbol") is None:
                 continue
 

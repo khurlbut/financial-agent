@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -72,3 +73,37 @@ def test_morgan_stanley_live_mode_keeps_value_for_non_ticker_assets(tmp_path, mo
     assert "USD" in by_asset
     assert str(by_asset["USD"].quantity) == "500"
     assert str(by_asset["USD"].market_value) == "500"
+
+
+def test_morgan_stanley_account_name_override(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("FINAGENT_DB_PATH", str(tmp_path / "financial_agent_test.sqlite3"))
+
+    from financial_agent.morgan_stanley_csv.importer import import_positions_csv
+    from financial_agent.providers.morgan_stanley_provider import MorganStanleyHoldingsProvider
+
+    csv_path = tmp_path / "kev.csv"
+    # No Account column here (mimics certain Morgan exports)
+    csv_path.write_text(
+        """Symbol,Description,Quantity,Price,Market Value,Currency\n"
+        "AAPL,Apple,1,100,100,USD\n"
+        """,
+        encoding="utf-8",
+    )
+
+    import_positions_csv(
+        db_path=tmp_path / "financial_agent_test.sqlite3",
+        csv_path=csv_path,
+        container_id="kev",
+        account_name_override="alternatives",
+    )
+
+    provider = MorganStanleyHoldingsProvider()
+    accounts = asyncio.run(provider.list_accounts(container_id="kev"))
+    assert [a.name for a in accounts] == ["alternatives"]
+
+
+def test_morgan_stanley_refresh_infers_account_name_from_filename() -> None:
+    from financial_agent.morgan_stanley_refresh import _infer_account_name_from_path
+
+    assert _infer_account_name_from_path(Path("Holdings Ungrouped.xlsx")) == "Holdings Ungrouped"
+    assert _infer_account_name_from_path(Path("alt_account-2026_01_05.csv")) == "alt account 2026 01 05"

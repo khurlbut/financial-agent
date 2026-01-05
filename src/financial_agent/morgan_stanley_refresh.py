@@ -4,10 +4,24 @@ import argparse
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 
 from . import settings
 from .morgan_stanley_csv import db as ms_db
 from .morgan_stanley_csv.importer import import_positions_csv
+
+
+_WS_RE = re.compile(r"\s+")
+
+
+def _infer_account_name_from_path(path: Path) -> str | None:
+    stem = (path.stem or "").strip()
+    if not stem:
+        return None
+    # Friendly normalization: underscores/dashes -> spaces; collapse whitespace.
+    stem = stem.replace("_", " ").replace("-", " ")
+    stem = _WS_RE.sub(" ", stem).strip()
+    return stem or None
 
 
 def _iter_import_files(paths: list[str], directory: str | None) -> list[Path]:
@@ -48,6 +62,11 @@ def main() -> None:
         default=None,
         help="Directory containing Morgan Stanley exports (*.csv, *.xlsx)",
     )
+    parser.add_argument(
+        "--account-name",
+        default=None,
+        help="Optional account label to apply when the export doesn't include an account identifier (e.g. 'alternatives').",
+    )
 
     args = parser.parse_args()
 
@@ -66,6 +85,7 @@ def main() -> None:
     db_path = settings.get_finagent_db_path()
     as_of = datetime.now(timezone.utc)
     container_id = (args.container_id or "").strip() or "morgan_stanley"
+    account_name = (args.account_name or "").strip() or None
 
     # One snapshot per refresh run so multiple account CSVs appear together.
     try:
@@ -78,12 +98,14 @@ def main() -> None:
 
         total_rows = 0
         for p in files:
+            inferred = _infer_account_name_from_path(p) if account_name is None else None
             res = import_positions_csv(
                 db_path=db_path,
                 csv_path=p,
                 as_of=as_of,
                 snapshot_id=snapshot_id,
                 container_id=container_id,
+                account_name_override=account_name or inferred,
             )
             total_rows += res.rows_imported
     except sqlite3.OperationalError as exc:
