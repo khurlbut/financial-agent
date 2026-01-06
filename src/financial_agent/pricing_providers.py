@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import json
 from datetime import datetime, timezone
 import urllib.parse
 import urllib.request
@@ -188,20 +189,92 @@ class StooqPricingProvider(PricingProvider):
         if not symbols:
             return {}
 
-        # Fetch in parallel to keep /agent/containers responsive for portfolios
-        # with many equities.
-        sem = asyncio.Semaphore(12)
+        # IMPORTANT: fetch in batches.
+        # One-request-per-symbol is slow and can lead to timeouts, which then
+        # surface as widespread missing_prices (even for liquid US equities).
+        chunk_size = 80
+        chunks = [symbols[i : i + chunk_size] for i in range(0, len(symbols), chunk_size)]
+
+        async def _one_chunk(chunk: list[str]) -> dict[str, Decimal]:
+            # Prefer .us; retry without suffix for anything missing.
+            got_us = await run_in_threadpool(_fetch_stooq_last_close_usd_batch, chunk, True)
+            remaining = [s for s in chunk if s not in got_us]
+            if not remaining:
+                return got_us
+            got_raw = await run_in_threadpool(_fetch_stooq_last_close_usd_batch, remaining, False)
+            out = dict(got_us)
+            out.update(got_raw)
+            return out
+
+        results = await asyncio.gather(*[_one_chunk(c) for c in chunks])
+        out: dict[str, Decimal] = {}
+        for d in results:
+            out.update(d)
+        return out
+
+
+class YahooPricingProvider(PricingProvider):
+    """Pricing provider for equities via Yahoo Finance quote endpoint.
+
+    Notes:
+    - No API key required.
+    - Intended primarily as a fallback when Stooq rate-limits.
+    """
+
+    provider_id = "yahoo"
+
+    def __init__(self) -> None:
+        # Small in-memory cache to avoid hammering Yahoo on repeated API calls.
+        self._cache: dict[str, tuple[datetime, Decimal]] = {}
+        self._cache_ttl_seconds = 5 * 60
+
+    async def get_prices(self, *, assets: set[str], quote_currency: str = "USD") -> dict[str, Decimal]:
+        qc = (quote_currency or "USD").strip().upper()
+        if qc != "USD":
+            return {}
+
+        symbols: list[str] = []
+        for asset in assets:
+            sym = (asset or "").strip().upper()
+            if not sym or sym in ("USD", "USDC"):
+                continue
+            symbols.append(sym)
+
+        if not symbols:
+            return {}
+
+        now = datetime.now(timezone.utc)
+        out: dict[str, Decimal] = {}
+        remaining: list[str] = []
+
+        for sym in symbols:
+            hit = self._cache.get(sym)
+            if hit is None:
+                remaining.append(sym)
+                continue
+            ts, price = hit
+            if (now - ts).total_seconds() >= self._cache_ttl_seconds:
+                remaining.append(sym)
+                continue
+            out[sym] = price
+
+        if not remaining:
+            return out
+
+        sem = asyncio.Semaphore(8)
 
         async def _one(sym: str) -> tuple[str, Decimal | None]:
             async with sem:
-                price = await run_in_threadpool(_fetch_stooq_last_close_usd, sym)
+                price = await run_in_threadpool(_fetch_yahoo_chart_price_usd, sym)
                 return (sym, price)
 
-        results = await asyncio.gather(*[_one(s) for s in symbols])
-        out: dict[str, Decimal] = {}
+        results = await asyncio.gather(*[_one(s) for s in remaining])
         for sym, price in results:
-            if price is not None:
-                out[sym] = price
+            if price is None:
+                continue
+            out[sym] = price
+            self._cache[sym] = (now, price)
+
         return out
 
 
@@ -276,3 +349,121 @@ def _fetch_stooq_last_close_usd(symbol: str) -> Decimal | None:
             continue
 
     return None
+
+
+def _fetch_stooq_last_close_usd_batch(symbols: list[str], prefer_us_suffix: bool) -> dict[str, Decimal]:
+    """Fetch last close prices from stooq.com for multiple tickers.
+
+    Stooq supports comma-separated symbols in the `s` parameter.
+    Returns a mapping keyed by the *original* symbols provided (uppercased).
+    """
+
+    cleaned: list[str] = []
+    key_by_request_sym: dict[str, str] = {}
+
+    for s in symbols:
+        base = (s or "").strip().upper()
+        if not base or base in {"USD", "USDC"}:
+            continue
+
+        req = base.lower()
+        if prefer_us_suffix and not req.endswith(".us"):
+            req = f"{req}.us"
+
+        cleaned.append(req)
+        key_by_request_sym[req] = base
+
+    if not cleaned:
+        return {}
+
+    url = "https://stooq.com/q/l/?" + urllib.parse.urlencode(
+        {
+            "s": ",".join(cleaned),
+            "f": "sd2t2ohlcv",
+            "h": "",
+            "e": "csv",
+        }
+    )
+
+    try:
+        with urllib.request.urlopen(url, timeout=15) as resp:  # nosec - controlled domain
+            raw = resp.read().decode("utf-8", errors="replace")
+    except Exception:
+        return {}
+
+    reader = csv.DictReader(io.StringIO(raw))
+    out: dict[str, Decimal] = {}
+    for row in reader:
+        if not row:
+            continue
+        sym = (row.get("Symbol") or "").strip().lower()
+        close_s = (row.get("Close") or "").strip()
+        if not sym or not close_s or close_s.upper() == "N/D":
+            continue
+
+        base = key_by_request_sym.get(sym)
+        if base is None:
+            # If we requested without suffix but got a suffix back (or vice versa), normalize.
+            if sym.endswith(".us"):
+                base = key_by_request_sym.get(sym[:-3])
+            else:
+                base = key_by_request_sym.get(f"{sym}.us")
+        if base is None:
+            continue
+
+        try:
+            out[base] = Decimal(close_s)
+        except Exception:
+            continue
+
+    return out
+
+
+def _fetch_yahoo_chart_price_usd(symbol: str) -> Decimal | None:
+    """Fetch a single symbol price from Yahoo chart endpoint.
+
+    The v7 quote endpoint is often restricted (401). The chart endpoint is more
+    reliably accessible with a User-Agent header.
+    """
+
+    sym = (symbol or "").strip().upper()
+    if not sym or sym in {"USD", "USDC"}:
+        return None
+
+    url = "https://query1.finance.yahoo.com/v8/finance/chart/" + urllib.parse.quote(sym) + "?" + urllib.parse.urlencode(
+        {"interval": "1d", "range": "5d"}
+    )
+
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+            "Accept": "application/json",
+        },
+        method="GET",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:  # nosec - public endpoint
+            raw = resp.read().decode("utf-8", errors="replace")
+    except Exception:
+        return None
+
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return None
+
+    chart = (data or {}).get("chart") or {}
+    results = chart.get("result") or []
+    if not isinstance(results, list) or not results:
+        return None
+
+    meta = (results[0] or {}).get("meta") or {}
+    p = meta.get("regularMarketPrice")
+    if p is None:
+        return None
+    try:
+        return Decimal(str(p))
+    except Exception:
+        return None

@@ -10,7 +10,7 @@ from .coinbase_client import CoinbaseClient
 from .cold_storage import load_cold_storage_devices
 from . import settings
 from .portfolio_service import PortfolioService
-from .pricing_providers import CoinbasePricingProvider, CompositePricingProvider, StooqPricingProvider
+from .pricing_providers import CoinbasePricingProvider, CompositePricingProvider, StooqPricingProvider, YahooPricingProvider
 from .providers.coinbase_provider import CoinbaseHoldingsProvider
 from .providers.cold_storage_provider import ColdStorageHoldingsProvider
 from .providers.morgan_stanley_provider import MorganStanleyHoldingsProvider
@@ -67,17 +67,19 @@ def _get_portfolio_service() -> PortfolioService:
         pricer = CoinbasePricingProvider(client=coinbase_client)
     elif provider_id == "stooq":
         pricer = StooqPricingProvider()
+    elif provider_id == "yahoo":
+        pricer = YahooPricingProvider()
     elif provider_id in {"composite", "coinbase+stooq", "stooq+coinbase"}:
         # CoinbasePricingProvider is guarded to avoid hitting Coinbase market data
         # for non-crypto symbols, so it's safe (and faster for crypto-heavy
         # portfolios) to try Coinbase first by default.
         if provider_id == "stooq+coinbase":
             pricer = CompositePricingProvider(
-                providers=[StooqPricingProvider(), CoinbasePricingProvider(client=coinbase_client)]
+                providers=[StooqPricingProvider(), YahooPricingProvider(), CoinbasePricingProvider(client=coinbase_client)]
             )
         else:
             pricer = CompositePricingProvider(
-                providers=[CoinbasePricingProvider(client=coinbase_client), StooqPricingProvider()]
+                providers=[CoinbasePricingProvider(client=coinbase_client), StooqPricingProvider(), YahooPricingProvider()]
             )
     else:
         raise HTTPException(status_code=500, detail=f"Unsupported pricing provider: {provider_id}")

@@ -106,6 +106,7 @@ def main() -> None:
                 snapshot_id=snapshot_id,
                 container_id=container_id,
                 account_name_override=account_name or inferred,
+                force_account_name_override=account_name is not None,
             )
             total_rows += res.rows_imported
     except sqlite3.OperationalError as exc:

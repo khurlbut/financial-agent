@@ -29,18 +29,18 @@ class MorganStanleyCsvHoldingsProvider(HoldingsProvider):
 
         conn = ms_db.connect(settings.get_finagent_db_path())
         try:
-            snap = ms_db.get_latest_snapshot(conn, container_id=cid)
-            if snap is None:
-                return []
-
             rows = conn.execute(
                 """
-                SELECT DISTINCT account_name
-                FROM ms_csv_positions
-                WHERE snapshot_id = ? AND account_name IS NOT NULL AND TRIM(account_name) != ''
-                ORDER BY account_name
+                SELECT DISTINCT p.account_name
+                FROM ms_csv_positions p
+                JOIN ms_csv_snapshots s ON s.id = p.snapshot_id
+                WHERE s.container_id = ?
+                  AND p.account_name IS NOT NULL
+                  AND TRIM(p.account_name) != ''
+                                    AND lower(trim(p.account_name)) NOT IN ('total', 'grand total')
+                ORDER BY p.account_name
                 """,
-                (snap.id,),
+                (cid,),
             ).fetchall()
 
             out: list[AccountRef] = []
@@ -60,21 +60,9 @@ class MorganStanleyCsvHoldingsProvider(HoldingsProvider):
 
         conn = ms_db.connect(settings.get_finagent_db_path())
         try:
-            snap = ms_db.get_latest_snapshot(conn, container_id=cid)
-            if snap is None:
-                return []
-
-            rows = conn.execute(
-                """
-                SELECT account_name, symbol, description, quantity, price, market_value, currency
-                FROM ms_csv_positions
-                WHERE snapshot_id = ?
-                """,
-                (snap.id,),
-            ).fetchall()
-
             holdings: list[Holding] = []
-            for r in rows:
+
+            def add_row(r) -> None:
                 account_name = r[0]
                 symbol = r[1]
                 description = r[2]
@@ -85,7 +73,7 @@ class MorganStanleyCsvHoldingsProvider(HoldingsProvider):
 
                 asset = (str(symbol).strip().upper() if symbol is not None else "")
                 if not asset:
-                    continue
+                    return
 
                 # Morgan Stanley exports sometimes include non-public, internally-coded holdings
                 # (e.g., private funds/alternatives). In live pricing mode, keep the institution
@@ -110,11 +98,11 @@ class MorganStanleyCsvHoldingsProvider(HoldingsProvider):
                                 market_value=mv_from_csv,
                             )
                         )
-                    continue
+                    return
 
                 qty = _parse_decimal(quantity_s)
                 if qty <= 0:
-                    continue
+                    return
 
                 price: Decimal | None = None
                 mv: Decimal | None = None
@@ -137,6 +125,64 @@ class MorganStanleyCsvHoldingsProvider(HoldingsProvider):
                         market_value=mv,
                     )
                 )
+
+            # Back-compat: include any rows without an account_name from the latest container snapshot.
+            latest_container_snap = ms_db.get_latest_snapshot(conn, container_id=cid)
+            if latest_container_snap is not None:
+                rows = conn.execute(
+                    """
+                    SELECT account_name, symbol, description, quantity, price, market_value, currency
+                    FROM ms_csv_positions
+                    WHERE snapshot_id = ?
+                      AND (account_name IS NULL OR TRIM(account_name) = '')
+                    """,
+                    (latest_container_snap.id,),
+                ).fetchall()
+                for r in rows:
+                    add_row(r)
+
+            # Main behavior: include the most recent snapshot per account name, so accounts imported
+            # in separate refresh runs still appear together.
+            account_rows = conn.execute(
+                """
+                SELECT DISTINCT p.account_name
+                FROM ms_csv_positions p
+                JOIN ms_csv_snapshots s ON s.id = p.snapshot_id
+                WHERE s.container_id = ?
+                  AND p.account_name IS NOT NULL
+                  AND TRIM(p.account_name) != ''
+                                    AND lower(trim(p.account_name)) NOT IN ('total', 'grand total')
+                ORDER BY p.account_name
+                """,
+                (cid,),
+            ).fetchall()
+
+            for ar in account_rows:
+                account_name = str(ar[0])
+                snap_row = conn.execute(
+                    """
+                    SELECT p.snapshot_id
+                    FROM ms_csv_positions p
+                    JOIN ms_csv_snapshots s ON s.id = p.snapshot_id
+                    WHERE s.container_id = ? AND p.account_name = ?
+                    ORDER BY s.as_of DESC, p.snapshot_id DESC
+                    LIMIT 1
+                    """,
+                    (cid, account_name),
+                ).fetchone()
+                if snap_row is None:
+                    continue
+                snapshot_id = int(snap_row[0])
+                rows = conn.execute(
+                    """
+                    SELECT account_name, symbol, description, quantity, price, market_value, currency
+                    FROM ms_csv_positions
+                    WHERE snapshot_id = ? AND account_name = ?
+                    """,
+                    (snapshot_id, account_name),
+                ).fetchall()
+                for r in rows:
+                    add_row(r)
 
             return holdings
         finally:
