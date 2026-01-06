@@ -217,4 +217,5 @@ def test_morgan_stanley_refresh_infers_account_name_from_filename() -> None:
     from financial_agent.morgan_stanley_refresh import _infer_account_name_from_path
 
     assert _infer_account_name_from_path(Path("Holdings Ungrouped.xlsx")) == "Holdings Ungrouped"
+    assert _infer_account_name_from_path(Path("Holdings ETFs.xlsx")) == "etfs-cefs"
     assert _infer_account_name_from_path(Path("alt_account-2026_01_05.csv")) == "alt account 2026 01 05"

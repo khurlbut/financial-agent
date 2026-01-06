@@ -14,6 +14,12 @@ from .morgan_stanley_csv.importer import import_positions_csv
 _WS_RE = re.compile(r"\s+")
 
 
+_FILENAME_ACCOUNT_ALIASES: dict[str, str] = {
+    # User-friendly account ids for known Morgan export filenames.
+    "holdings etfs": "etfs-cefs",
+}
+
+
 def _infer_account_name_from_path(path: Path) -> str | None:
     stem = (path.stem or "").strip()
     if not stem:
@@ -21,7 +27,10 @@ def _infer_account_name_from_path(path: Path) -> str | None:
     # Friendly normalization: underscores/dashes -> spaces; collapse whitespace.
     stem = stem.replace("_", " ").replace("-", " ")
     stem = _WS_RE.sub(" ", stem).strip()
-    return stem or None
+    if not stem:
+        return None
+    mapped = _FILENAME_ACCOUNT_ALIASES.get(stem.strip().lower())
+    return mapped or stem
 
 
 def _iter_import_files(paths: list[str], directory: str | None) -> list[Path]:
