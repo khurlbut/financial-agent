@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
+import logging
 
 from . import settings
 from .models import (
@@ -60,8 +61,15 @@ class PortfolioService:
         containers: list[ContainerRef] = []
         account_names: dict[tuple[str, str, str], str | None] = {}
 
+        log = logging.getLogger(__name__)
+
         for provider in self._providers:
-            provider_containers = await provider.list_containers()
+            try:
+                provider_containers = await provider.list_containers()
+            except Exception as exc:
+                log.warning("Holdings provider %s failed list_containers: %s", type(provider).__name__, exc)
+                continue
+
             containers.extend(provider_containers)
             for container in provider_containers:
                 # Best-effort account discovery for name annotation.
@@ -71,7 +79,16 @@ class PortfolioService:
                 except Exception:
                     pass
 
-                all_holdings.extend(await provider.get_holdings(container_id=container.container_id))
+                try:
+                    all_holdings.extend(await provider.get_holdings(container_id=container.container_id))
+                except Exception as exc:
+                    log.warning(
+                        "Holdings provider %s failed get_holdings for container_id=%r: %s",
+                        type(provider).__name__,
+                        container.container_id,
+                        exc,
+                    )
+                    continue
 
         # Normalize/clean holdings.
         cleaned: list[Holding] = []
