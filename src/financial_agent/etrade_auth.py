@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 
 from . import settings
 from .etrade_client import ETradeClient
@@ -30,7 +31,12 @@ def main() -> None:
     container_id = (args.container_id or "").strip() or "etrade"
     env = (args.env or settings.get_etrade_environment()).strip().lower()
 
-    client = ETradeClient(base_url=settings.get_etrade_base_url())
+    base_url = settings.get_etrade_base_url()
+    if args.env and not (os.getenv("ETRADE_BASE_URL") or "").strip():
+        # Best-effort override when the user explicitly chose an env.
+        base_url = "https://api.etrade.com" if env in {"prod", "production"} else "https://apisb.etrade.com"
+
+    client = ETradeClient(base_url=base_url)
 
     req = client.get_request_token(callback_url=args.callback_url)
     print("Open this URL to authorize E*Trade access:")

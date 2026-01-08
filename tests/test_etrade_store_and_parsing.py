@@ -50,3 +50,13 @@ def test_etrade_provider_parsing_accounts_and_positions():
     }
     positions = list(_iter_positions(portfolio_resp))
     assert [p["symbol"] for p in positions] == ["AAPL", "VTI"]
+
+
+def test_etrade_authorize_url_format(monkeypatch):
+    from financial_agent.etrade_client import build_etrade_authorize_url
+
+    url = "https://us.etrade.com/e/t/etws/authorize"
+    built = build_etrade_authorize_url(authorize_url=url, consumer_key="ck", request_token="reqtok")
+    assert built.startswith(url)
+    assert "key=ck" in built
+    assert "token=reqtok" in built

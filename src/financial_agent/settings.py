@@ -261,3 +261,16 @@ def get_etrade_tokens_path() -> Path:
     if raw:
         return Path(raw).expanduser()
     return PROJECT_ROOT / ".etrade_tokens.json"
+
+
+def get_etrade_authorize_url() -> str:
+    """Browser authorization URL for E*Trade OAuth.
+
+    This is a *web* endpoint, not the API host.
+    """
+
+    raw = _env("ETRADE_AUTHORIZE_URL")
+    if raw:
+        return raw.strip()
+    # E*Trade OAuth authorize endpoint (works for sandbox + prod based on key).
+    return "https://us.etrade.com/e/t/etws/authorize"

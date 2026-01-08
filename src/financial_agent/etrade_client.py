@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlencode
 
 import requests
 
@@ -53,7 +54,7 @@ class ETradeClient:
 
         # E*Trade OAuth1 endpoints.
         request_token_url = f"{self._base_url}/oauth/request_token"
-        authorize_url = f"{self._base_url}/oauth/authorize"
+        authorize_url = settings.get_etrade_authorize_url()
 
         resp = sess.fetch_request_token(request_token_url)
         tok = resp.get("oauth_token")
@@ -61,7 +62,12 @@ class ETradeClient:
         if not isinstance(tok, str) or not isinstance(sec, str) or not tok or not sec:
             raise RuntimeError("E*Trade request_token response missing oauth_token/oauth_token_secret")
 
-        full_authorize_url = sess.authorization_url(authorize_url)
+        # E*Trade expects a web authorization URL with `key` (consumer key) and `token` (request token).
+        full_authorize_url = build_etrade_authorize_url(
+            authorize_url=authorize_url,
+            consumer_key=self._consumer_key,
+            request_token=tok,
+        )
         return OAuthRequestToken(oauth_token=tok, oauth_token_secret=sec, authorize_url=full_authorize_url)
 
     def exchange_access_token(
@@ -100,7 +106,14 @@ class ETradeClient:
             resource_owner_secret=oauth_token_secret,
         )
 
-    def get_json(self, *, oauth_token: str, oauth_token_secret: str, path: str, params: dict[str, Any] | None = None) -> Any:
+    def get_json(
+        self,
+        *,
+        oauth_token: str,
+        oauth_token_secret: str,
+        path: str,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
         sess = self._oauth_session(oauth_token=oauth_token, oauth_token_secret=oauth_token_secret)
         url = f"{self._base_url}{path}"
         r = sess.get(url, params=params, headers={"Accept": "application/json"}, timeout=self._timeout_s)
@@ -128,3 +141,8 @@ class ETradeClient:
             oauth_token_secret=oauth_token_secret,
             path=f"/v1/accounts/{account_id_key}/balance.json",
         )
+
+
+def build_etrade_authorize_url(*, authorize_url: str, consumer_key: str, request_token: str) -> str:
+    base = (authorize_url or "").strip() or settings.get_etrade_authorize_url()
+    return f"{base}?{urlencode({'key': consumer_key, 'token': request_token})}"
