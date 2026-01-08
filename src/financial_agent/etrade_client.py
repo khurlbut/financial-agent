@@ -4,7 +4,11 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode
 
+import ssl
+
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.poolmanager import PoolManager
 
 from . import settings
 
@@ -14,6 +18,41 @@ class OAuthRequestToken:
     oauth_token: str
     oauth_token_secret: str
     authorize_url: str
+
+
+class _TLS12HttpAdapter(HTTPAdapter):
+    """Requests transport that forces TLS 1.2.
+
+    E*Trade endpoints commonly negotiate TLS 1.2, and in some environments the
+    default handshake can get reset by the peer. Forcing TLS 1.2 makes the
+    handshake behavior match `curl --tlsv1.2`.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self._ssl_context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
+        # Pin to TLS 1.2 for maximum compatibility with E*Trade endpoints.
+        self._ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
+        self._ssl_context.maximum_version = ssl.TLSVersion.TLSv1_2
+        super().__init__(*args, **kwargs)
+
+    def init_poolmanager(
+        self,
+        connections: int,
+        maxsize: int,
+        block: bool = False,
+        **pool_kwargs: Any,
+    ) -> None:
+        self.poolmanager = PoolManager(
+            num_pools=connections,
+            maxsize=maxsize,
+            block=block,
+            ssl_context=self._ssl_context,
+            **pool_kwargs,
+        )
+
+
+def _mount_tls12_adapter(sess: requests.Session) -> None:
+    sess.mount("https://", _TLS12HttpAdapter())
 
 
 class ETradeClient:
@@ -51,6 +90,7 @@ class ETradeClient:
             client_secret=self._consumer_secret,
             callback_uri=cb,
         )
+        _mount_tls12_adapter(sess)
 
         # E*Trade OAuth1 endpoints.
         request_token_url = f"{self._base_url}/oauth/request_token"
@@ -88,6 +128,7 @@ class ETradeClient:
             resource_owner_secret=oauth_token_secret,
             verifier=verifier,
         )
+        _mount_tls12_adapter(sess)
         access_token_url = f"{self._base_url}/oauth/access_token"
         resp = sess.fetch_access_token(access_token_url)
         tok = resp.get("oauth_token")
@@ -99,12 +140,14 @@ class ETradeClient:
     def _oauth_session(self, *, oauth_token: str, oauth_token_secret: str):
         from requests_oauthlib import OAuth1Session
 
-        return OAuth1Session(
+        sess = OAuth1Session(
             client_key=self._consumer_key,
             client_secret=self._consumer_secret,
             resource_owner_key=oauth_token,
             resource_owner_secret=oauth_token_secret,
         )
+        _mount_tls12_adapter(sess)
+        return sess
 
     def get_json(
         self,
