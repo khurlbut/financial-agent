@@ -37,6 +37,7 @@ def main() -> None:
         base_url = "https://api.etrade.com" if env in {"prod", "production"} else "https://apisb.etrade.com"
 
     client = ETradeClient(base_url=base_url)
+    print(f"Using E*Trade API base URL: {client.base_url}")
 
     req = client.get_request_token(callback_url=args.callback_url)
     print("Open this URL to authorize E*Trade access:")

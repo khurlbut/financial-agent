@@ -5,6 +5,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 import ssl
+import time
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -96,7 +97,27 @@ class ETradeClient:
         request_token_url = f"{self._base_url}/oauth/request_token"
         authorize_url = settings.get_etrade_authorize_url()
 
-        resp = sess.fetch_request_token(request_token_url)
+        resp: dict[str, Any] | None = None
+        last_exc: Exception | None = None
+        # Best-effort retries: E*Trade endpoints can occasionally reset connections.
+        for attempt in range(1, 4):
+            try:
+                resp = sess.fetch_request_token(request_token_url, timeout=self._timeout_s)
+                last_exc = None
+                break
+            except requests.exceptions.RequestException as exc:
+                last_exc = exc
+                # Recreate the session to ensure a fresh TCP connection.
+                sess = OAuth1Session(
+                    client_key=self._consumer_key,
+                    client_secret=self._consumer_secret,
+                    callback_uri=cb,
+                )
+                _mount_tls12_adapter(sess)
+                if attempt < 3:
+                    time.sleep(0.5 * (2 ** (attempt - 1)))
+        if resp is None:
+            raise RuntimeError("Failed to fetch E*Trade request token") from last_exc
         tok = resp.get("oauth_token")
         sec = resp.get("oauth_token_secret")
         if not isinstance(tok, str) or not isinstance(sec, str) or not tok or not sec:
@@ -130,7 +151,29 @@ class ETradeClient:
         )
         _mount_tls12_adapter(sess)
         access_token_url = f"{self._base_url}/oauth/access_token"
-        resp = sess.fetch_access_token(access_token_url)
+
+        resp: dict[str, Any] | None = None
+        last_exc: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                resp = sess.fetch_access_token(access_token_url, timeout=self._timeout_s)
+                last_exc = None
+                break
+            except requests.exceptions.RequestException as exc:
+                last_exc = exc
+                sess = OAuth1Session(
+                    client_key=self._consumer_key,
+                    client_secret=self._consumer_secret,
+                    resource_owner_key=oauth_token,
+                    resource_owner_secret=oauth_token_secret,
+                    verifier=verifier,
+                )
+                _mount_tls12_adapter(sess)
+                if attempt < 3:
+                    time.sleep(0.5 * (2 ** (attempt - 1)))
+
+        if resp is None:
+            raise RuntimeError("Failed to exchange E*Trade access token") from last_exc
         tok = resp.get("oauth_token")
         sec = resp.get("oauth_token_secret")
         if not isinstance(tok, str) or not isinstance(sec, str) or not tok or not sec:
