@@ -13,6 +13,7 @@ from .portfolio_service import PortfolioService
 from .pricing_providers import CoinbasePricingProvider, CompositePricingProvider, StooqPricingProvider, YahooPricingProvider
 from .providers.coinbase_provider import CoinbaseHoldingsProvider
 from .providers.cold_storage_provider import ColdStorageHoldingsProvider
+from .providers.etrade_provider import ETradeHoldingsProvider
 from .providers.morgan_stanley_provider import MorganStanleyHoldingsProvider
 from .providers.schwab_provider import SchwabHoldingsProvider
 from .plaid_client import create_link_token, exchange_public_token
@@ -52,6 +53,7 @@ def _get_portfolio_service() -> PortfolioService:
         ColdStorageHoldingsProvider(),
         SchwabHoldingsProvider(),
         MorganStanleyHoldingsProvider(),
+        ETradeHoldingsProvider(),
     ]
 
     # Pricing provider

@@ -2,6 +2,8 @@ fastapi
 uvicorn
 httpx
 python-dotenv
+requests
+requests-oauthlib
 coinbase-advanced-py
 plaid-python
 openpyxl

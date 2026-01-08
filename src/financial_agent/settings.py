@@ -202,3 +202,62 @@ def get_plaid_tokens_path() -> Path:
     if raw:
         return Path(raw).expanduser()
     return PROJECT_ROOT / ".plaid_tokens.json"
+
+
+@dataclass(frozen=True)
+class ETradeCredentials:
+    consumer_key: str
+    consumer_secret: str
+
+
+def get_etrade_credentials() -> ETradeCredentials:
+    key = _env("ETRADE_CONSUMER_KEY")
+    secret = _env("ETRADE_CONSUMER_SECRET")
+    if not key or not secret:
+        raise RuntimeError("ETRADE_CONSUMER_KEY or ETRADE_CONSUMER_SECRET not set in environment")
+    return ETradeCredentials(consumer_key=key, consumer_secret=secret)
+
+
+def get_etrade_environment() -> str:
+    """E*Trade API environment.
+
+    - "sandbox": for SANDBOX API keys
+    - "prod": for production API keys
+    """
+
+    return (_env("ETRADE_ENV") or "sandbox").strip().lower()
+
+
+def get_etrade_base_url() -> str:
+    """Base URL for E*Trade API.
+
+    Can be overridden with ETRADE_BASE_URL. Defaults are best-effort.
+    """
+
+    raw = _env("ETRADE_BASE_URL")
+    if raw:
+        return raw.rstrip("/")
+
+    env = get_etrade_environment()
+    if env in {"prod", "production"}:
+        return "https://api.etrade.com"
+    return "https://apisb.etrade.com"
+
+
+def get_etrade_callback_url() -> str:
+    """OAuth callback URL.
+
+    For CLI flows, many OAuth1 providers support out-of-band ("oob").
+    If your E*Trade app requires a registered callback URL, set ETRADE_CALLBACK_URL.
+    """
+
+    return (_env("ETRADE_CALLBACK_URL") or "oob").strip()
+
+
+def get_etrade_tokens_path() -> Path:
+    """Path to local E*Trade token store (single-user local mode)."""
+
+    raw = _env("FINAGENT_ETRADE_TOKENS_PATH")
+    if raw:
+        return Path(raw).expanduser()
+    return PROJECT_ROOT / ".etrade_tokens.json"
