@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +18,11 @@ class ETradeToken:
 
 
 def load_etrade_tokens(path: Path | None = None) -> dict[str, ETradeToken]:
+    # Keep tests hermetic: don't accidentally pick up a developer's real tokens
+    # from the default project-root file during pytest runs.
+    if path is None and os.getenv("PYTEST_CURRENT_TEST") and not (os.getenv("FINAGENT_ETRADE_TOKENS_PATH") or "").strip():
+        return {}
+
     p = path or settings.get_etrade_tokens_path()
     if not p.exists():
         return {}
